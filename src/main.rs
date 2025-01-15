@@ -1,6 +1,7 @@
 #![allow(unused_variables)]
 #![allow(unused_mut)]
 #![allow(unused_imports)]
+#![allow(dead_code)]
 
 use opencv::{
     core::{self, Point, Rect, Size, Vector},
@@ -42,9 +43,12 @@ impl VideoProcessor {
             true,
         )?;
 
+        // Initialize card assets HashMap
+        let mut card_assets = HashMap::new();
+
         Ok(VideoProcessor {
             source,
-            card_assets: HashMap::new(),
+            card_assets,
             output,
         })
     }
@@ -55,59 +59,67 @@ impl VideoProcessor {
         placements: &[CardPlacement],
     ) -> Result<(), Box<dyn Error>> {
         for placement in placements {
-            // Draw the actual contour in blue
+            // Load card asset if not already loaded
+            let card_asset = self
+                .card_assets
+                .entry(placement.card_asset_path.clone())
+                .or_insert_with(|| {
+                    imgcodecs::imread(&placement.card_asset_path, imgcodecs::IMREAD_UNCHANGED)
+                        .expect("Failed to load card asset")
+                });
+
+            // Resize the card asset to match the placeholder size
+            let mut resized_asset = Mat::default();
+            imgproc::resize(
+                card_asset,
+                &mut resized_asset,
+                core::Size::new(placement.position.width, placement.position.height),
+                0.0,
+                0.0,
+                imgproc::INTER_LINEAR,
+            )?;
+
+            // Create ROI for the card placement
+            let mut roi = frame.roi_mut(placement.position)?;
+
+            // Create overlay
+            let mut overlay = Mat::default();
+            roi.copy_to(&mut overlay)?;
+
+            // Blend the card with the background
+            for y in 0..overlay.rows() {
+                for x in 0..overlay.cols() {
+                    if resized_asset.channels() == 4 {
+                        let pixel = resized_asset.at_2d::<core::Vec4b>(y, x)?;
+                        let alpha = pixel[3] as f32 / 255.0;
+                        if alpha > 0.0 {
+                            let bg = overlay.at_2d_mut::<core::Vec3b>(y, x)?;
+                            for c in 0..3 {
+                                bg[c] =
+                                    ((1.0 - alpha) * bg[c] as f32 + alpha * pixel[c] as f32) as u8;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Copy the result back
+            overlay.copy_to(&mut roi)?;
+
+            // Optional: Draw contour for debugging
             let mut contours = Vector::<Vector<Point>>::new();
             contours.push(placement.contour.clone());
             imgproc::draw_contours(
                 frame,
                 &contours,
                 0,
-                core::Scalar::new(255.0, 0.0, 0.0, 255.0), // Blue
+                core::Scalar::new(0.0, 255.0, 0.0, 255.0), // Green outline
                 2,
                 imgproc::LINE_8,
                 &Mat::default(),
                 0,
                 Point::new(0, 0),
             )?;
-
-            // Draw bounding rectangle in red
-            // imgproc::rectangle(
-            //     frame,
-            //     placement.position,
-            //     core::Scalar::new(0.0, 0.0, 255.0, 255.0), // Red
-            //     2,
-            //     imgproc::LINE_8,
-            //     0,
-            // )?;
-
-            // Draw corner points in green
-            let corners = [
-                Point::new(placement.position.x, placement.position.y),
-                Point::new(
-                    placement.position.x + placement.position.width,
-                    placement.position.y,
-                ),
-                Point::new(
-                    placement.position.x,
-                    placement.position.y + placement.position.height,
-                ),
-                Point::new(
-                    placement.position.x + placement.position.width,
-                    placement.position.y + placement.position.height,
-                ),
-            ];
-
-            // for corner in &corners {
-            //     imgproc::circle(
-            //         frame,
-            //         *corner,
-            //         5,
-            //         core::Scalar::new(0.0, 255.0, 0.0, 255.0), // Green
-            //         -1,
-            //         imgproc::LINE_8,
-            //         0,
-            //     )?;
-            // }
         }
         Ok(())
     }
