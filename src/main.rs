@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use opencv::{
-    core::{self, Point, Rect, Size, Vector},
+    core::{self, Point, Point2f, Rect, Size, Vector},
     imgcodecs, imgproc,
     prelude::*,
     types, videoio,
@@ -59,83 +59,118 @@ impl VideoProcessor {
         placements: &[CardPlacement],
     ) -> Result<(), Box<dyn Error>> {
         for placement in placements {
-            // Load card asset if not already loaded
             let card_asset = self
                 .card_assets
                 .entry(placement.card_asset_path.clone())
                 .or_insert_with(|| {
-                    imgcodecs::imread(&placement.card_asset_path, imgcodecs::IMREAD_UNCHANGED)
+                    imgcodecs::imread(&placement.card_asset_path, imgcodecs::IMREAD_COLOR)
                         .expect("Failed to load card asset")
                 });
 
-            // Resize the card asset to match the placeholder size
+            // Get rotated rectangle and vertices
+            let rot_rect = imgproc::min_area_rect(&placement.contour)?;
+            let mut vertices = [core::Point2f::default(); 4];
+            rot_rect.points(&mut vertices)?;
+
+            // Sort vertices correctly (top-left, top-right, bottom-right, bottom-left)
+            let center = vertices.iter().fold(Point2f::new(0.0, 0.0), |acc, &p| {
+                Point2f::new(acc.x + p.x / 4.0, acc.y + p.y / 4.0)
+            });
+
+            vertices.sort_by(|a, b| {
+                let a_angle = (a.y - center.y).atan2(a.x - center.x);
+                let b_angle = (b.y - center.y).atan2(b.x - center.x);
+                b_angle.partial_cmp(&a_angle).unwrap()
+            });
+
+            // Calculate width and height from the rotated rectangle
+            let width = rot_rect.size.width as i32;
+            let height = rot_rect.size.height as i32;
+
+            // Create source points for a properly oriented rectangle
+            let source_points = [
+                Point2f::new(0.0, 0.0),
+                Point2f::new(width as f32, 0.0),
+                Point2f::new(width as f32, height as f32),
+                Point2f::new(0.0, height as f32),
+            ];
+
+            // Create transformation matrices
+            let src_points = Mat::from_slice(&source_points)?;
+            let dst_points = Mat::from_slice(&vertices)?;
+
+            // Resize card asset
             let mut resized_asset = Mat::default();
             imgproc::resize(
                 card_asset,
                 &mut resized_asset,
-                core::Size::new(placement.position.width, placement.position.height),
+                core::Size::new(width, height),
                 0.0,
                 0.0,
                 imgproc::INTER_LINEAR,
             )?;
 
-            // Create ROI for the card placement
-            let mut roi = frame.roi_mut(placement.position)?;
+            // Get perspective transform and apply it
+            let transform_matrix =
+                imgproc::get_perspective_transform(&src_points, &dst_points, core::DECOMP_LU)?;
+            let mut warped = Mat::default();
+            imgproc::warp_perspective(
+                &resized_asset,
+                &mut warped,
+                &transform_matrix,
+                frame.size()?,
+                imgproc::INTER_LINEAR,
+                core::BORDER_CONSTANT,
+                core::Scalar::default(),
+            )?;
 
-            // Create overlay
-            let mut overlay = Mat::default();
-            roi.copy_to(&mut overlay)?;
-
-            // Blend the card with the background
-            for y in 0..overlay.rows() {
-                for x in 0..overlay.cols() {
-                    if resized_asset.channels() == 4 {
-                        let pixel = resized_asset.at_2d::<core::Vec4b>(y, x)?;
-                        let alpha = pixel[3] as f32 / 255.0;
-                        if alpha > 0.0 {
-                            let bg = overlay.at_2d_mut::<core::Vec3b>(y, x)?;
-                            for c in 0..3 {
-                                bg[c] =
-                                    ((1.0 - alpha) * bg[c] as f32 + alpha * pixel[c] as f32) as u8;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Copy the result back
-            overlay.copy_to(&mut roi)?;
-
-            // Optional: Draw contour for debugging
+            // Create mask from contour
+            let mut mask =
+                Mat::zeros(frame.size()?.height, frame.size()?.width, core::CV_8UC1)?.to_mat()?;
             let mut contours = Vector::<Vector<Point>>::new();
             contours.push(placement.contour.clone());
             imgproc::draw_contours(
-                frame,
+                &mut mask,
                 &contours,
                 0,
-                core::Scalar::new(0.0, 255.0, 0.0, 255.0), // Green outline
-                2,
+                core::Scalar::new(255.0, 0.0, 0.0, 0.0),
+                -1,
                 imgproc::LINE_8,
                 &Mat::default(),
                 0,
                 Point::new(0, 0),
             )?;
+
+            // Blend the warped image with the frame using the mask
+            let mut warped_bgr = Mat::default();
+            core::convert_scale_abs(&warped, &mut warped_bgr, 1.0, 0.0)?;
+            warped.copy_to_masked(frame, &mask)?;
         }
         Ok(())
     }
 
     fn process_video(&mut self, game_data: &GameData) -> Result<(), Box<dyn Error>> {
         let mut frame = Mat::default();
+        let total_frames = self.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32;
+        let mut frame_count = 0;
 
         while self.source.read(&mut frame)? {
-            // Detect card placeholders
+            // Process frame
             let placements = self.detect_placeholders(&frame, game_data)?;
-
-            // Process frame with overlays
             self.process_frame(&mut frame, &placements)?;
-
-            // Write processed frame
             self.output.write(&frame)?;
+
+            // Show progress
+            frame_count += 1;
+            if frame_count % 10 == 0 {
+                // Update every 10 frames
+                println!(
+                    "Processing frame {}/{} ({:.1}%)",
+                    frame_count,
+                    total_frames,
+                    (frame_count as f32 / total_frames as f32) * 100.0
+                );
+            }
         }
         Ok(())
     }
@@ -408,8 +443,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Verify input files exist
     let input_video = "temp1.mp4";
-    let card1_path = "card1.png";
-    let card2_path = "card2.png";
+    let card1_path = "card1.jpg";
+    let card2_path = "card2.jpg";
 
     if !std::path::Path::new(input_video).exists() {
         return Err(format!("Input video not found: {}", input_video).into());
