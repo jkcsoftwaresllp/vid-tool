@@ -30,14 +30,17 @@ impl VideoProcessor {
         let height = source.get(videoio::CAP_PROP_FRAME_HEIGHT)? as i32;
 
         // Create VideoWriter
-        let fourcc = videoio::VideoWriter::fourcc('M', 'J', 'P', 'G')?;
-        let output = videoio::VideoWriter::new(
+        let fourcc = videoio::VideoWriter::fourcc('X', '2', '6', '4')?; // Using H.264 codec
+        let mut output = videoio::VideoWriter::new(
             output_path,
             fourcc,
             fps,
             core::Size::new(width, height),
             true,
         )?;
+
+        // Set higher bitrate
+        output.set(videoio::VIDEOWRITER_PROP_QUALITY, 320.0)?;
 
         // Initialize card assets HashMap
         let card_assets = HashMap::new();
@@ -59,7 +62,7 @@ impl VideoProcessor {
                 .card_assets
                 .entry(placement.card_asset_path.clone())
                 .or_insert_with(|| {
-                    imgcodecs::imread(&placement.card_asset_path, imgcodecs::IMREAD_COLOR)
+                    imgcodecs::imread(&placement.card_asset_path, imgcodecs::IMREAD_UNCHANGED)
                         .expect("Failed to load card asset")
                 });
 
@@ -103,7 +106,7 @@ impl VideoProcessor {
                 core::Size::new(width, height),
                 0.0,
                 0.0,
-                imgproc::INTER_LINEAR,
+                imgproc::INTER_CUBIC,
             )?;
 
             // Get perspective transform and apply it
@@ -115,7 +118,7 @@ impl VideoProcessor {
                 &mut warped,
                 &transform_matrix,
                 frame.size()?,
-                imgproc::INTER_LINEAR,
+                imgproc::INTER_CUBIC,
                 core::BORDER_CONSTANT,
                 core::Scalar::default(),
             )?;
@@ -138,8 +141,8 @@ impl VideoProcessor {
             )?;
 
             // Blend the warped image with the frame using the mask
-            let mut warped_bgr = Mat::default();
-            core::convert_scale_abs(&warped, &mut warped_bgr, 1.0, 0.0)?;
+            // let mut warped_bgr = Mat::default();
+            // core::convert_scale_abs(&warped, &mut warped_bgr, 1.0, 0.0)?;
             warped.copy_to_masked(frame, &mask)?;
         }
         Ok(())
