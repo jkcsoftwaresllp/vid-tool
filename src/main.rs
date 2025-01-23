@@ -2,13 +2,23 @@
 #![allow(unused_imports)]
 #![allow(non_snake_case)]
 
-use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
 mod vid;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
-use vid::VideoProcessor;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixListener;
+
+// Add OpenCV imports
+use opencv::{
+    core::{Mat, Vector},
+    imgcodecs,
+    prelude::*,
+    videoio,
+};
+
+// Import GameData from vid module
+use crate::vid::{GameData, VideoProcessor};
 
 #[derive(Deserialize)]
 struct ProcessRequest {
@@ -50,6 +60,13 @@ enum ProcessResponse {
 
     #[serde(rename = "received")]
     Received { message: String },
+
+    #[serde(rename = "frame")]
+    Frame {
+        frame_number: i32,
+        frame_data: String, // Base64 encoded frame
+        total_frames: i32,
+    },
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -62,20 +79,66 @@ fn main() -> Result<(), Box<dyn Error>> {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                // Read the entire input into a string first
+                // This gives us the actual UnixStream
                 let mut input = String::new();
                 {
                     let mut reader = BufReader::new(&stream);
                     reader.read_line(&mut input)?;
                 }
 
-                // Now process the input
                 match serde_json::from_str::<ProcessRequest>(&input) {
-                    Ok(_req) => {
+                    Ok(req) => {
                         let received = ProcessResponse::Received {
-                            message: "Request received successfully".to_string(),
+                            message: "Starting video processing".to_string(),
                         };
                         let response = serde_json::to_string(&received)?;
+                        stream.write_all(response.as_bytes())?; // No ? before write_all needed here
+                        stream.write_all(b"\n")?;
+
+                        let input_video = match req.gameState.gameType.as_str() {
+                            "AndarBaharGame" => "assets/teen_patti_1.mp4",
+                            // "ANDAR_BAHAR" => "assets/andar_bahar_template.mp4",
+                            // "LUCKY7B" => "assets/lucky7_template.mp4",
+                            // "DRAGON_TIGER" => "assets/dragon_tiger_template.mp4",
+                            // "TEEN_PATTI" => "assets/teen_patti_template.mp4",
+                            _ => return Err("Unsupported game type".into()),
+                        };
+
+                        let mut processor = VideoProcessor::new(input_video, &req.output_path)?;
+
+                        let game_data = GameData {
+                            card_assets: vec!["card1.jpg".to_string()],
+                        };
+
+                        let mut frame = Mat::default();
+                        let total_frames =
+                            processor.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32;
+                        let mut frame_count = 0;
+
+                        while processor.source.read(&mut frame)? {
+                            let placements = processor.detect_placeholders(&frame, &game_data)?;
+                            processor.process_frame(&mut frame, &placements)?;
+
+                            let mut buffer = Vector::new();
+                            imgcodecs::imencode(".jpg", &frame, &mut buffer, &Vector::new())?;
+                            let frame_data = base64::encode(&buffer);
+
+                            let frame_response = ProcessResponse::Frame {
+                                frame_number: frame_count,
+                                frame_data,
+                                total_frames,
+                            };
+                            let response = serde_json::to_string(&frame_response)?;
+                            stream.write_all(response.as_bytes())?;
+                            stream.write_all(b"\n")?;
+
+                            frame_count += 1;
+                        }
+
+                        let completed = ProcessResponse::Completed {
+                            output_path: req.output_path,
+                        };
+                        let response = serde_json::to_string(&completed)?;
                         stream.write_all(response.as_bytes())?;
                         stream.write_all(b"\n")?;
                     }

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::error::Error;
 
 #[allow(dead_code)]
-struct CardPlacement {
+pub struct CardPlacement {
     position: core::Rect,
     card_asset_path: String,
     contour: Vector<Point>, // Add this field
@@ -19,9 +19,9 @@ pub struct GameData {
 }
 
 pub struct VideoProcessor {
-    source: videoio::VideoCapture,
+    pub source: videoio::VideoCapture,
     card_assets: HashMap<String, Mat>,
-    output: videoio::VideoWriter,
+    pub output: videoio::VideoWriter,
 }
 
 impl VideoProcessor {
@@ -56,7 +56,7 @@ impl VideoProcessor {
         })
     }
 
-    fn process_frame(
+    pub fn process_frame(
         &mut self,
         frame: &mut Mat,
         placements: &[CardPlacement],
@@ -178,7 +178,7 @@ impl VideoProcessor {
         Ok(())
     }
 
-    fn detect_placeholders(
+    pub fn detect_placeholders(
         &self,
         frame: &Mat,
         game_data: &GameData,
