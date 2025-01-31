@@ -71,7 +71,7 @@ enum ProcessResponse {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let socket_path = "/tmp/video-processor.sock";
-    let _ = std::fs::remove_file(socket_path);
+    let _ = std::fs::remove_file(socket_path); // (?)
 
     let listener = UnixListener::bind(socket_path)?;
     println!("Video processor listening on {}", socket_path);
@@ -81,6 +81,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(mut stream) => {
                 // This gives us the actual UnixStream
                 let mut input = String::new();
+
+                // (?): why creating a different scope?
                 {
                     let mut reader = BufReader::new(&stream);
                     reader.read_line(&mut input)?;
