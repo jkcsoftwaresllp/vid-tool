@@ -18,8 +18,9 @@ use opencv::{
 
 #[derive(Deserialize)]
 struct ProcessRequest {
-    req_type: String, // "non_dealing_stream", "dealing_stage", "switch_to_dealing", "return_to_non_dealing"
-    game_type: String,
+    phase: String, // "non_dealing_stream", "dealing_stage", "switch_to_dealing", "return_to_non_dealing"
+    game: String,
+    host: String,
     game_state: Option<GameState>,
 }
 
@@ -124,14 +125,14 @@ fn handle_connection(
     // println!("Preparing to print the request");
     // println!("Got request: { }!", request.req_type);
 
-    match request.req_type.as_str() {
-        "non_dealing_stream" => handle_non_dealing_stream(stream, &request.game_type, game_streams),
-        "dealing_stage" => {
+    match request.phase.as_str() {
+        "non_dealing" => handle_non_dealing_stream(stream, &request.game, game_streams),
+        "dealing" => {
             let game_state = request.game_state.ok_or("Dealing stage requires game state")?;
             println!("Received game state: {:#?}", game_state);
             handle_dealing_stage(
             stream,
-            &request.game_type,
+            &request.game,
             game_state,
             game_streams,
         )},
@@ -151,7 +152,7 @@ fn handle_non_dealing_stream(
     game_streams: Arc<Mutex<HashMap<String, GameStream>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Use the direct video path as requested.
-    let input_video = "assets/re4.mp4".to_string();
+    let input_video = "assets/videos/re4.mp4".to_string();
     let mut processor = VideoProcessor::new(&input_video)?;
 
     {
@@ -237,9 +238,9 @@ fn send_frame(
         total_frames: processor.get_total_frames()?,
     };
 
-    // if let ProcessResponse::Frame { frame_number, .. } = &frame_response {
-    //     println!("Sending frame: {}", frame_number);
-    // }
+    if let ProcessResponse::Frame { frame_number, .. } = &frame_response {
+        println!("Sending frame: {}", frame_number);
+    }
 
     send_response(stream, &frame_response)?;
     Ok(())
