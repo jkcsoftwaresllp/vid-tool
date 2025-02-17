@@ -1,0 +1,1 @@
+echo '{"req_type":"non_dealing_stream","game_type":"ANDAR_BAHAR_TWO"}' | nc -U /tmp/video-processor.sock

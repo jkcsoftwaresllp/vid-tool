@@ -24,8 +24,10 @@ pub struct VideoProcessor {
     output: videoio::VideoWriter,
 }
 
+use crate::stream::GameState;
+
 impl VideoProcessor {
-    pub fn new(input_path: &str, output_path: &str) -> Result<Self, Box<dyn Error>> {
+    pub fn new(input_path: &str,) -> Result<Self, Box<dyn Error>> {
         let source = videoio::VideoCapture::from_file(input_path, videoio::CAP_ANY)?;
 
         // Get video properties
@@ -34,9 +36,9 @@ impl VideoProcessor {
         let height = source.get(videoio::CAP_PROP_FRAME_HEIGHT)? as i32;
 
         // Create VideoWriter
-        let fourcc = videoio::VideoWriter::fourcc('X', '2', '6', '4')?; // Using H.264 codec
+        let fourcc = videoio::VideoWriter::fourcc('a', 'v', 'c', '1')?; // TODO: use better codec
         let mut output = videoio::VideoWriter::new(
-            output_path,
+            "output_production.mp4",
             fourcc,
             fps,
             core::Size::new(width, height),
@@ -54,6 +56,82 @@ impl VideoProcessor {
             card_assets,
             output,
         })
+    }
+
+    pub fn process_dealing_frame(&mut self, frame: &mut Mat, game_state: &GameState) -> Result<(), Box<dyn Error>> {
+        // Create GameData from game state
+        let game_data = self.create_game_data_from_state(game_state)?;
+        
+        // Detect placeholders and get card placements
+        let placements = self.detect_placeholders(frame, &game_data)?;
+        
+        // Process frame with the detected placements
+        self.process_frame(frame, &placements)?;
+        
+        Ok(())
+    }
+
+    fn create_game_data_from_state(&self, game_state: &GameState) -> Result<GameData, Box<dyn Error>> {
+        let mut card_assets = Vec::new();
+
+        // Process joker card if present
+        if let Some(joker) = &game_state.cards.jokerCard {
+            card_assets.push(self.get_card_asset_path(joker));
+        }
+
+        // Process blind card if present
+        if let Some(blind) = &game_state.cards.blindCard {
+            card_assets.push(self.get_card_asset_path(blind));
+        }
+
+        // Process player cards
+        for card in &game_state.cards.playerA {
+            card_assets.push(self.get_card_asset_path(card));
+        }
+        for card in &game_state.cards.playerB {
+            card_assets.push(self.get_card_asset_path(card));
+        }
+        // Process playerC cards if present
+        if let Some(player_c_cards) = &game_state.cards.playerC {
+            for card in player_c_cards {
+                card_assets.push(self.get_card_asset_path(card));
+            }
+        }
+
+        Ok(GameData { card_assets })
+    }
+
+    fn get_card_asset_path(&self, card: &str) -> String {
+        // Convert card code to asset path
+        // Example: "H2" -> "assets/cards/hearts_2.png"
+        let (suit, rank) = card.split_at(1);
+        let suit_name = match suit {
+            "H" => "hearts",
+            "D" => "diamonds",
+            "C" => "clubs",
+            "S" => "spades",
+            _ => "unknown",
+        };
+        
+        format!("assets/cards/{}_{}.png", suit_name, rank)
+    }
+
+    pub fn switch_video_source(&mut self, video_path: &str) -> Result<(), Box<dyn Error>> {
+        self.source = videoio::VideoCapture::from_file(video_path, videoio::CAP_ANY)?;
+        Ok(())
+    }
+
+    pub fn reset_frame_count(&mut self) -> Result<(), Box<dyn Error>> {
+        self.source.set(videoio::CAP_PROP_POS_FRAMES, 0.0)?;
+        Ok(())
+    }
+
+    pub fn get_frame_number(&self) -> Result<i32, Box<dyn std::error::Error>> {
+        Ok(self.source.get(videoio::CAP_PROP_POS_FRAMES)? as i32)
+    }
+
+    pub fn get_total_frames(&self) -> Result<i32, Box<dyn std::error::Error>> {
+        Ok(self.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32)
     }
 
     pub fn process_frame(
