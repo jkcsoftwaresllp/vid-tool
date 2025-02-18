@@ -28,11 +28,9 @@ struct ProcessRequest {
 #[allow(non_snake_case, dead_code)]
 pub struct GameState {
     gameType: String,
-    gameId: String,
-    status: String,
+    roundId: String,
     pub cards: Cards,
     winner: Option<String>,
-    startTime: i64,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -129,9 +127,10 @@ fn handle_connection(
         "non_dealing" => handle_non_dealing_stream(stream, &request.game, game_streams),
         "dealing" => {
             let game_state = request.game_state.ok_or("Dealing stage requires game state")?;
-            println!("Received game state: {:#?}", game_state);
+            // println!("Received game state: {:#?}", game_state);
             handle_dealing_stage(
             stream,
+            &request.host,
             &request.game,
             game_state,
             game_streams,
@@ -151,12 +150,10 @@ fn handle_non_dealing_stream(
     game_type: &str,
     game_streams: Arc<Mutex<HashMap<String, GameStream>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Use the direct video path as requested.
     let input_video = "assets/videos/re4.mp4".to_string();
     let mut processor = VideoProcessor::new(&input_video)?;
 
     {
-        // Insert an entry to keep track of the current stage.
         let mut gs = game_streams.lock().unwrap();
         gs.insert(
             game_type.to_string(),
@@ -168,19 +165,21 @@ fn handle_non_dealing_stream(
     }
 
     let mut frame = Mat::default();
-    while processor.source.read(&mut frame)? {
-        // Check if we should switch to dealing stage by re-locking.
+    loop {
+        // Check stage before attempting to read next frame
         {
             let gs = game_streams.lock().unwrap();
             if let Some(current_stream) = gs.get(game_type) {
                 if current_stream.stage == StreamingStage::Dealing {
-                    break;
+                    return Ok(());  // Exit immediately if dealing stage detected
                 }
             }
         }
 
-        // Directly send the video frame without additional processing.
-        // println!("Preparing to send non-dealing frame...");
+        // Only read and send frame if still in non-dealing stage
+        if !processor.source.read(&mut frame)? {
+            break;
+        }
         send_frame(stream, &frame, &processor)?;
     }
 
@@ -189,6 +188,7 @@ fn handle_non_dealing_stream(
 
 fn handle_dealing_stage(
     stream: &mut UnixStream,
+    host: &String,
     game_type: &str,
     game_state: GameState,
     game_streams: Arc<Mutex<HashMap<String, GameStream>>>,
@@ -202,12 +202,18 @@ fn handle_dealing_stage(
     }
 
     // Process dealing specific frames with a new processor
-    let dealing_video = get_dealing_video(game_type)?;
+    let dealing_video = get_dealing_video(
+        game_type,
+        host,
+        game_state.winner.as_deref()
+    )?;
     let mut processor = VideoProcessor::new(&dealing_video)?;
+
     let mut frame = Mat::default();
     while processor.source.read(&mut frame)? {
         // Apply game state specific modifications
         processor.process_dealing_frame(&mut frame, &game_state)?;
+        println!("Processing frame: {}", processor.get_frame_number()?);
         send_frame(stream, &frame, &processor)?;
     }
 
@@ -238,9 +244,9 @@ fn send_frame(
         total_frames: processor.get_total_frames()?,
     };
 
-    if let ProcessResponse::Frame { frame_number, .. } = &frame_response {
-        println!("Sending frame: {}", frame_number);
-    }
+    // if let ProcessResponse::Frame { frame_number, .. } = &frame_response {
+    //     println!("Sending frame: {}", frame_number);
+    // }
 
     send_response(stream, &frame_response)?;
     Ok(())
@@ -256,10 +262,23 @@ fn send_response(
     Ok(())
 }
 
-fn get_dealing_video(game_type: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn get_dealing_video(game_type: &str, host: &String, winner: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+    use rand::Rng;
+    let _random_num = rand::thread_rng().gen_range(1..=9);
+    
     match game_type {
-        "ANDAR_BAHAR_TWO" => Ok("assets/dealing/andar_bahar.mp4".to_string()),
-        "TEEN_PATTI" => Ok("assets/teen_patti_1.mp4".to_string()),
+        "ANDAR_BAHAR_TWO" | "TEEN_PATTI" => {
+            let vpath = format!("assets/videos/{}/{}/{}_{}.mp4",
+            game_type,
+            host,
+            winner.unwrap_or("default"),
+            "1"
+        );
+
+        println!("Dealing video path: {}", vpath);
+
+            Ok(vpath)
+        },
         _ => Err("Unsupported game type".into()),
     }
 }
