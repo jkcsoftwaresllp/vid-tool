@@ -234,57 +234,68 @@ fn handle_connection(
     broadcaster: Arc<WebSocketBroadcaster>,
     game_streams: Arc<Mutex<HashMap<String, GameStream>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // println!("checkpoint #1");
-
     let mut reader = BufReader::new(stream.try_clone()?);
-    // println!("checkpoint #2");
     let mut input = String::new();
     reader.read_line(&mut input)?;
-    // println!("checkpoint #3");
 
     let request: ProcessRequest = serde_json::from_str(&input).expect("Error parsing request");
 
-    // println!("Preparing to print the request");
-    // println!("Got request: { }!", request.req_type);
+    // Send immediate acknowledgment response
+    let response = ProcessResponse::Received {
+        message: "Stream processing started".to_string(),
+    };
+    send_response(stream, &response)?;
 
+    // Start streaming in separate thread
     match request.phase.as_str() {
-        "non_dealing" => handle_non_dealing_stream(
-            stream,
-            &request.game,
-            broadcaster.clone(),
-            game_streams,
-            &request.roundId,
-        ),
+        "non_dealing" => {
+            let broadcaster = broadcaster.clone();
+            let game_streams = game_streams.clone();
+            let game = request.game.clone();
+            let round_id = request.roundId.clone();
+
+            thread::spawn(move || {
+                if let Err(e) =
+                    handle_non_dealing_stream(&game, broadcaster, game_streams, &round_id)
+                {
+                    eprintln!("Error in non-dealing stream: {:?}", e);
+                }
+            });
+        }
         "dealing" => {
             let game_state = request
                 .game_state
                 .ok_or("Dealing stage requires game state")?;
-            println!("Received game state: {:#?}", game_state);
-            handle_dealing_stage(
-                stream,
-                &request.host,
-                &request.game,
-                game_state,
-                broadcaster.clone(),
-                game_streams,
-            )
+            let broadcaster = broadcaster.clone();
+            let game_streams = game_streams.clone();
+            let host = request.host.clone();
+            let game = request.game.clone();
+
+            thread::spawn(move || {
+                if let Err(e) =
+                    handle_dealing_stage(&host, &game, game_state, broadcaster, game_streams)
+                {
+                    eprintln!("Error in dealing stream: {:?}", e);
+                }
+            });
         }
         _ => {
             let error = ProcessResponse::Error {
                 message: "Invalid request type".to_string(),
             };
             send_response(stream, &error)?;
-            Err("Invalid request type".into())
+            return Err("Invalid request type".into());
         }
     }
+
+    Ok(())
 }
 
 fn handle_non_dealing_stream(
-    stream: &mut UnixStream,
     game_type: &str,
     broadcaster: Arc<WebSocketBroadcaster>,
     game_streams: Arc<Mutex<HashMap<String, GameStream>>>,
-    round_id: &str, // Add round_id parameter
+    round_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input_video = "assets/videos/re4.mp4".to_string();
     let mut processor = VideoProcessor::new(&input_video)?;
@@ -302,8 +313,8 @@ fn handle_non_dealing_stream(
 
     let mut frame = Mat::default();
     let mut frame_count = 0;
+
     loop {
-        // Check stage before attempting to read next frame
         {
             let gs = game_streams.lock().unwrap();
             if let Some(current_stream) = gs.get(game_type) {
@@ -314,7 +325,6 @@ fn handle_non_dealing_stream(
             }
         }
 
-        // Only read and send frame if still in non-dealing stage
         if !processor.source.read(&mut frame)? {
             println!("Reached end of video, resetting");
             processor.reset_frame_count()?;
@@ -324,15 +334,12 @@ fn handle_non_dealing_stream(
         frame_count += 1;
         println!("Processing frame #{}", frame_count);
 
-        send_frame(stream, &frame, &processor, &broadcaster, round_id)?;
-
-        // Add sleep to control frame rate
-        std::thread::sleep(Duration::from_millis(33)); // ~30 fps
+        send_frame(&frame, &processor, &broadcaster, round_id)?;
+        std::thread::sleep(Duration::from_millis(33));
     }
 }
 
 fn handle_dealing_stage(
-    stream: &mut UnixStream,
     host: &String,
     game_type: &str,
     game_state: GameState,
@@ -356,13 +363,7 @@ fn handle_dealing_stage(
         // Apply game state specific modifications
         processor.process_dealing_frame(&mut frame, &game_state)?;
         println!("Processing frame: {}", processor.get_frame_number()?);
-        send_frame(
-            stream,
-            &frame,
-            &processor,
-            &broadcaster,
-            &game_state.roundId,
-        )?;
+        send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
         std::thread::sleep(Duration::from_millis(33));
     }
 
@@ -379,7 +380,6 @@ fn handle_dealing_stage(
 }
 
 fn send_frame(
-    stream: &mut UnixStream,
     frame: &Mat,
     processor: &VideoProcessor,
     broadcaster: &WebSocketBroadcaster,
@@ -395,13 +395,8 @@ fn send_frame(
         total_frames: processor.get_total_frames()?,
     };
 
-    println!("Sending frames... to round: {}", round_id);
-
-    // Broadcast to WebSocket clients
+    println!("Broadcasting frame to round: {}", round_id);
     broadcaster.broadcast(round_id, &frame_response)?;
-
-    // Also send response back to Unix domain socket
-    send_response(stream, &frame_response)?;
     Ok(())
 }
 
