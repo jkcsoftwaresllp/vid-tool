@@ -1,3 +1,5 @@
+// BROKEN - This file is not being used for benchmarking. The benchmarking is done in the main.rs file.
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::time::{Duration, Instant};
 use sysinfo::{CpuExt, System, SystemExt};
@@ -8,7 +10,7 @@ pub fn benchmark_video_processing(c: &mut Criterion) {
 
     // Test data setup
     let input_video = "assets/teen_patti_1.mp4";
-    let output_video = "bench_output.mp4";
+    let _ = "bench_output.mp4";
     let card_assets = vec!["card1.jpg".to_string()];
 
     group.sample_size(10);
@@ -21,7 +23,7 @@ pub fn benchmark_video_processing(c: &mut Criterion) {
             let start_time = Instant::now();
             let initial_memory = sys.used_memory();
 
-            let mut processor = VideoProcessor::new(input_video, output_video).unwrap();
+            let mut processor = VideoProcessor::new(input_video).unwrap();
             let game_data = GameData {
                 card_assets: card_assets.clone(),
             };
@@ -49,8 +51,8 @@ pub fn benchmark_video_processing(c: &mut Criterion) {
             let mut completed_videos = 0;
 
             for i in 0..test_count {
-                let output = format!("bench_output_{}.mp4", i);
-                let mut processor = VideoProcessor::new(input_video, &output).unwrap();
+                let _ = format!("bench_output_{}.mp4", i);
+                let mut processor = VideoProcessor::new(input_video).unwrap();
                 let game_data = GameData {
                     card_assets: card_assets.clone(),
                 };
@@ -70,11 +72,9 @@ pub fn benchmark_video_processing(c: &mut Criterion) {
             let total_attempts = 10; // Reduced for testing
             let mut errors = 0;
 
-            for i in 0..total_attempts {
+            for _ in 0..total_attempts {
                 let result = std::panic::catch_unwind(|| {
-                    let mut processor =
-                        VideoProcessor::new(input_video, &format!("bench_error_{}.mp4", i))
-                            .unwrap();
+                    let mut processor = VideoProcessor::new(input_video).unwrap();
                     let game_data = GameData {
                         card_assets: card_assets.clone(),
                     };
@@ -100,12 +100,8 @@ pub fn benchmark_video_processing(c: &mut Criterion) {
                 let start_time = Instant::now();
 
                 // Process videos sequentially
-                for i in 0..load {
-                    let mut processor = VideoProcessor::new(
-                        input_video,
-                        &format!("bench_scale_{}_{}.mp4", load, i),
-                    )
-                    .unwrap();
+                for _ in 0..load {
+                    let mut processor = VideoProcessor::new(input_video).unwrap();
                     let game_data = GameData {
                         card_assets: card_assets.clone(),
                     };

@@ -13,6 +13,8 @@ rayon = "1.8"
 lazy_static = "1.4"
 base64 = "0.13"
 rand = "0.8"
+tokio-tungstenite = "0.26.2"
+futures = "0.3.31"
 # ffmpeg-next = "6.0"
 # tokio-tungstenite = "0.19" # For WebSocket
 

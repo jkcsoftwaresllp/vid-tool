@@ -14,7 +14,7 @@ fn test_main() -> Result<(), Box<dyn Error>> {
     );
 
     // Verify input files exist
-    let input_video = "assets/HostA_PlayerB.mp4";
+    let input_video = "assets/videos/TEEN_PATTI/HostA/playerA_1.mp4";
     let card1_path = "card1.jpg";
     let card2_path = "card2.jpg";
 
@@ -25,7 +25,7 @@ fn test_main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let mut processor = VideoProcessor::new(input_video, "output.mp4")?;
+    let mut processor = VideoProcessor::new(input_video)?;
 
     let game_data = GameData {
         card_assets: vec![card1_path.to_string(), card2_path.to_string()],

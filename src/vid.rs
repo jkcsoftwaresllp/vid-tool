@@ -19,7 +19,7 @@ pub struct GameData {
 }
 
 pub struct VideoProcessor {
-   pub source: videoio::VideoCapture,
+    pub source: videoio::VideoCapture,
     card_assets: HashMap<String, Mat>,
     output: videoio::VideoWriter,
 }
@@ -27,7 +27,7 @@ pub struct VideoProcessor {
 use crate::stream::GameState;
 
 impl VideoProcessor {
-    pub fn new(input_path: &str,) -> Result<Self, Box<dyn Error>> {
+    pub fn new(input_path: &str) -> Result<Self, Box<dyn Error>> {
         let source = videoio::VideoCapture::from_file(input_path, videoio::CAP_ANY)?;
 
         // Get video properties
@@ -58,20 +58,27 @@ impl VideoProcessor {
         })
     }
 
-    pub fn process_dealing_frame(&mut self, frame: &mut Mat, game_state: &GameState) -> Result<(), Box<dyn Error>> {
+    pub fn process_dealing_frame(
+        &mut self,
+        frame: &mut Mat,
+        game_state: &GameState,
+    ) -> Result<(), Box<dyn Error>> {
         // Create GameData from game state
         let game_data = self.create_game_data_from_state(game_state)?;
-        
+
         // Detect placeholders and get card placements
         let placements = self.detect_placeholders(frame, &game_data)?;
-        
+
         // Process frame with the detected placements
         self.process_frame(frame, &placements)?;
-        
+
         Ok(())
     }
 
-    fn create_game_data_from_state(&self, game_state: &GameState) -> Result<GameData, Box<dyn Error>> {
+    fn create_game_data_from_state(
+        &self,
+        game_state: &GameState,
+    ) -> Result<GameData, Box<dyn Error>> {
         let mut card_assets = Vec::new();
 
         // Process joker card if present
@@ -107,13 +114,13 @@ impl VideoProcessor {
         let (suit, rank) = card.split_at(1);
         let suit_name = match suit {
             "H" => "hearts",
-            "D" => "diamonds",
+            "D" => "diamond",
             "C" => "clubs",
             "S" => "spades",
             _ => "unknown",
         };
-        
-        format!("assets/cards/{}_{}.png", suit_name, rank)
+
+        format!("assets/cards/{}_{}.png", suit_name, rank.to_lowercase())
     }
 
     pub fn switch_video_source(&mut self, video_path: &str) -> Result<(), Box<dyn Error>> {
