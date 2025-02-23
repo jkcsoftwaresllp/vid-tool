@@ -1,38 +1,39 @@
-FROM rust:1.70 as builder
+# Start with Ubuntu base image
+FROM ubuntu:22.04
 
-# Install OpenCV dependencies
+# Prevent timezone prompt during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    libopencv-dev \
-    clang \
+    curl \
+    build-essential \
+    pkg-config \
     cmake \
+    libopencv-dev \
+    python3-opencv \
+    clang \
+    libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Create working directory
 WORKDIR /app
 
-# Copy manifest files
-COPY Cargo.toml Cargo.lock ./
+# Copy project files
+COPY . .
 
-# Copy source code
-COPY src ./src
-
-# Build the application
+# Build the project
 RUN cargo build --release
 
-# Runtime stage
-FROM debian:bullseye-slim
+# Create Unix socket directory
+RUN mkdir -p /tmp
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libopencv-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Expose WebSocket port
+EXPOSE 8000
 
-WORKDIR /app
-
-# Copy the built binary from builder
-COPY --from=builder /app/target/release/vid-tool /app/vid-tool
-
-# Create directory for assets
-RUN mkdir -p /app/assets
-
-# Run the video processor
-CMD ["./vid-tool"]
+# Run the application
+CMD ["./target/release/vid-tool"]

@@ -23,6 +23,7 @@ use opencv::{
 };
 
 #[derive(Deserialize)]
+#[allow(non_snake_case, dead_code)]
 struct ProcessRequest {
     phase: String, // "non_dealing_stream", "dealing_stage", "switch_to_dealing", "return_to_non_dealing"
     game: String,
@@ -107,11 +108,11 @@ impl WebSocketBroadcaster {
         let mut conns = self.connections.lock().unwrap();
 
         if let Some(round_connections) = conns.get_mut(round_id) {
-            println!("Broadcasting to {} connections", round_connections.len());
+            // println!("Broadcasting to {} connections", round_connections.len());
             round_connections.retain(|tx| {
                 match tx.send(Message::Text(response_str.clone().into())) {
                     Ok(_) => {
-                        println!("Successfully sent frame");
+                        // println!("Successfully sent frame");
                         true
                     }
                     Err(e) => {
@@ -121,7 +122,7 @@ impl WebSocketBroadcaster {
                 }
             });
         } else {
-            println!("No connections found for round_id: {}", round_id);
+            // println!("No connections found for round_id: {}", round_id);
         }
         Ok(())
     }
@@ -332,7 +333,7 @@ fn handle_non_dealing_stream(
         }
 
         frame_count += 1;
-        println!("Processing frame #{}", frame_count);
+        // println!("Processing frame #{}", frame_count);
 
         send_frame(&frame, &processor, &broadcaster, round_id)?;
         std::thread::sleep(Duration::from_millis(33));
@@ -362,7 +363,7 @@ fn handle_dealing_stage(
     while processor.source.read(&mut frame)? {
         // Apply game state specific modifications
         processor.process_dealing_frame(&mut frame, &game_state)?;
-        println!("Processing frame: {}", processor.get_frame_number()?);
+        // println!("Processing frame: {}", processor.get_frame_number()?);
         send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
         std::thread::sleep(Duration::from_millis(33));
     }
@@ -395,7 +396,7 @@ fn send_frame(
         total_frames: processor.get_total_frames()?,
     };
 
-    println!("Broadcasting frame to round: {}", round_id);
+    // println!("Broadcasting frame to round: {}", round_id);
     broadcaster.broadcast(round_id, &frame_response)?;
     Ok(())
 }
