@@ -1,7 +1,7 @@
-use vid_tool::{vid::GameData, vid::VideoProcessor};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::error::Error;
 use std::path::PathBuf;
+use vid_tool::{vid::GameData, vid::VideoProcessor};
 
 #[test]
 fn test_main() -> Result<(), Box<dyn Error>> {
@@ -9,7 +9,9 @@ fn test_main() -> Result<(), Box<dyn Error>> {
     let pb = ProgressBar::new(100);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}% ({eta})")?
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}% ({eta})",
+            )?
             .progress_chars("#>-"),
     );
 
@@ -28,7 +30,7 @@ fn test_main() -> Result<(), Box<dyn Error>> {
     let mut processor = VideoProcessor::new(input_video)?;
 
     let game_data = GameData {
-        card_assets: vec![card1_path.to_string(), card2_path.to_string()],
+        card_assets: vec![card1_path.to_string().into(), card2_path.to_string().into()],
     };
 
     println!("Starting video processing...");

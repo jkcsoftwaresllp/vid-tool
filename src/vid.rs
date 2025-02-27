@@ -5,9 +5,33 @@ use opencv::{
     videoio,
 };
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::Arc;
+
+struct MatPool {
+    available: VecDeque<Mat>,
+    max_size: usize,
+}
+
+impl MatPool {
+    fn new(max_size: usize) -> Self {
+        Self {
+            available: VecDeque::with_capacity(max_size),
+            max_size,
+        }
+    }
+
+    fn get(&mut self) -> Mat {
+        self.available.pop_front().unwrap_or_default()
+    }
+
+    fn return_mat(&mut self, mat: Mat) {
+        if self.available.len() < self.max_size {
+            self.available.push_back(mat);
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub struct CardPlacement {
@@ -26,6 +50,11 @@ pub struct VideoProcessor {
     output: videoio::VideoWriter,
     // Cache for transformation matrices
     transform_cache: HashMap<(i32, i32), Mat>,
+    mat_pool: MatPool,
+    // Reusable buffers for process_frame
+    mask_buffer: Mat,
+    warped_buffer: Mat,
+    resized_buffer: Mat,
 }
 
 use crate::stream::GameState;
@@ -40,7 +69,7 @@ impl VideoProcessor {
         let height = source.get(videoio::CAP_PROP_FRAME_HEIGHT)? as i32;
 
         // Create VideoWriter with better codec settings
-        let fourcc = videoio::VideoWriter::fourcc('H', '2', '6', '4')?; // H264 is generally better supported
+        let fourcc = videoio::VideoWriter::fourcc('a', 'c', 'v', '1')?; // H264 is generally better supported
         let mut output = videoio::VideoWriter::new(
             "output_production.mp4",
             fourcc,
@@ -57,6 +86,10 @@ impl VideoProcessor {
             card_assets: HashMap::new(),
             output,
             transform_cache: HashMap::new(),
+            mat_pool: MatPool::new(20), // Adjust pool size as needed
+            mask_buffer: Mat::default(),
+            warped_buffer: Mat::default(),
+            resized_buffer: Mat::default(),
         })
     }
 
@@ -168,56 +201,50 @@ impl VideoProcessor {
         frame: &mut Mat,
         placements: &[CardPlacement],
     ) -> Result<(), Box<dyn Error>> {
-        // Pre-allocate buffers to avoid reallocations
-        let mut mask =
-            Mat::zeros(frame.size()?.height, frame.size()?.width, core::CV_8UC1)?.to_mat()?;
-        let mut warped = Mat::default();
         let frame_size = frame.size()?;
 
-        for placement in placements {
-            // Get card asset from cache - using references to avoid cloning
-            let card_asset = match self.card_assets.get(&placement.card_asset_path) {
-                Some(asset) => asset,
-                None => {
-                    // Load only if not in cache
-                    let path_str = placement.card_asset_path.to_str().ok_or("Invalid path")?;
-                    let asset = imgcodecs::imread(path_str, imgcodecs::IMREAD_UNCHANGED)?;
-                    self.card_assets
-                        .insert(placement.card_asset_path.clone(), asset);
-                    self.card_assets.get(&placement.card_asset_path).unwrap()
-                }
-            };
+        // Ensure buffers are properly sized
+        if self.mask_buffer.size()? != frame_size {
+            self.mask_buffer =
+                Mat::zeros(frame_size.height, frame_size.width, core::CV_8UC1)?.to_mat()?;
+        }
 
-            // Get rotated rectangle
+        for placement in placements {
             let rot_rect = imgproc::min_area_rect(&placement.contour)?;
             let mut vertices = [core::Point2f::default(); 4];
             rot_rect.points(&mut vertices)?;
 
-            // Sort vertices (this part can be optimized using direct comparisons)
             self.sort_vertices(&mut vertices);
 
-            // Calculate width and height
             let width = rot_rect.size.width as i32;
             let height = rot_rect.size.height as i32;
 
-            // Use cached transformation matrix if available
+            // Get transform matrix
             let transform_matrix = self.get_transform_matrix(width, height, &vertices)?;
 
-            // Resize card asset only once per unique size
-            let mut resized_asset = Mat::default();
+            // Get card asset first, before any buffer operations
+            let card_asset = self.get_or_load_card_asset(&placement.card_asset_path)?;
+
+            // Create a temporary Mat for the resize operation
+            let mut temp_resized = Mat::default();
+
+            // Perform resize into temporary buffer
             imgproc::resize(
                 card_asset,
-                &mut resized_asset,
+                &mut temp_resized,
                 core::Size::new(width, height),
                 0.0,
                 0.0,
-                imgproc::INTER_LINEAR, // INTER_LINEAR is faster than INTER_CUBIC with minimal visual difference
+                imgproc::INTER_LINEAR,
             )?;
 
-            // Apply perspective transform
+            // Now copy to our reusable buffer
+            temp_resized.copy_to(&mut self.resized_buffer)?;
+
+            // Rest of the operations...
             imgproc::warp_perspective(
-                &resized_asset,
-                &mut warped,
+                &self.resized_buffer,
+                &mut self.warped_buffer,
                 &transform_matrix,
                 frame_size,
                 imgproc::INTER_LINEAR,
@@ -225,12 +252,13 @@ impl VideoProcessor {
                 core::Scalar::default(),
             )?;
 
-            // Create mask from contour (reuse the same mask buffer)
-            mask.set_to(&core::Scalar::new(0.0, 0.0, 0.0, 0.0), &Mat::default())?;
+            // Clear mask and draw contours
+            self.mask_buffer
+                .set_to(&core::Scalar::new(0.0, 0.0, 0.0, 0.0), &Mat::default())?;
             let mut contours = Vector::<Vector<Point>>::new();
             contours.push(placement.contour.clone());
             imgproc::draw_contours(
-                &mut mask,
+                &mut self.mask_buffer,
                 &contours,
                 0,
                 core::Scalar::new(255.0, 0.0, 0.0, 0.0),
@@ -241,13 +269,25 @@ impl VideoProcessor {
                 Point::new(0, 0),
             )?;
 
-            // Blend the warped image with the frame using the mask
-            warped.copy_to_masked(frame, &mask)?;
+            // Apply masked copy
+            self.warped_buffer
+                .copy_to_masked(frame, &self.mask_buffer)?;
         }
         Ok(())
     }
 
-    // Helper method to sort vertices more efficiently
+    // Helper function to get or load card asset
+    fn get_or_load_card_asset(&mut self, path: &PathBuf) -> Result<&Mat, Box<dyn Error>> {
+        if !self.card_assets.contains_key(path) {
+            let asset = imgcodecs::imread(
+                path.to_str().ok_or("Invalid path")?,
+                imgcodecs::IMREAD_UNCHANGED,
+            )?;
+            self.card_assets.insert(path.clone(), asset);
+        }
+        Ok(self.card_assets.get(path).unwrap())
+    }
+
     fn sort_vertices(&self, vertices: &mut [Point2f; 4]) {
         // Calculate center
         let center = vertices.iter().fold(Point2f::new(0.0, 0.0), |acc, &p| {
@@ -354,7 +394,7 @@ impl VideoProcessor {
             for mut frame in frames.iter_mut() {
                 let placements = self.detect_placeholders(&frame, game_data)?;
                 self.process_frame(&mut frame, &placements)?;
-                self.output.write(&frame)?;
+                self.output.write(frame)?;
 
                 frame_count += 1;
                 if frame_count % 10 == 0 {
@@ -375,26 +415,19 @@ impl VideoProcessor {
         frame: &Mat,
         game_data: &GameData,
     ) -> Result<Vec<CardPlacement>, Box<dyn Error>> {
-        // Create mask for pure green color in BGR - reuse as static buffer
-        static mut MASK: Option<Mat> = None;
-        let mask = unsafe {
-            if MASK.is_none() {
-                MASK = Some(Mat::default());
-            }
-            MASK.as_mut().unwrap()
-        };
+        // Create a new mask for each call - the overhead is minimal
+        let mut mask = Mat::default();
 
         let threshold = 30.0; // Tolerance for color detection
-
         let lower_green = core::Scalar::new(0.0, 255.0 - threshold, 0.0, 0.0);
         let upper_green = core::Scalar::new(threshold, 255.0, threshold, 0.0);
 
-        core::in_range(&frame, &lower_green, &upper_green, mask)?;
+        core::in_range(&frame, &lower_green, &upper_green, &mut mask)?;
 
         // Find contours
         let mut contours = Vector::<Vector<Point>>::new();
         imgproc::find_contours(
-            mask,
+            &mask,
             &mut contours,
             imgproc::RETR_EXTERNAL,
             imgproc::CHAIN_APPROX_SIMPLE,

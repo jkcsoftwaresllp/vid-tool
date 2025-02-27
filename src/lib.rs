@@ -1,2 +1,2 @@
-pub mod vid;
 pub mod stream;
+pub mod vid;

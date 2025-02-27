@@ -1,4 +1,5 @@
 use futures::{SinkExt, StreamExt};
+use opencv::imgproc;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -399,19 +400,38 @@ fn send_frame(
     broadcaster: &WebSocketBroadcaster,
     round_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Sending frame - original size: {:?}", frame.size()?);
+
+    // Let's try sending the frame directly first without color conversion
     let mut buffer = Vector::new();
-    imgcodecs::imencode(".jpg", &frame, &mut buffer, &Vector::new())?;
-    let frame_data = base64::encode(&buffer);
+    let params = Vector::from_slice(&[imgcodecs::IMWRITE_JPEG_QUALITY, 90]);
 
-    let frame_response = ProcessResponse::Frame {
-        frame_number: processor.get_frame_number()?,
-        frame_data,
-        total_frames: processor.get_total_frames()?,
-    };
+    match imgcodecs::imencode(".jpg", &frame, &mut buffer, &params) {
+        Ok(_) => {
+            println!("Successfully encoded frame, buffer size: {}", buffer.len());
+            let frame_data = base64::encode(&buffer);
 
-    // println!("Broadcasting frame to round: {}", round_id);
-    broadcaster.broadcast(round_id, &frame_response)?;
-    Ok(())
+            let frame_response = ProcessResponse::Frame {
+                frame_number: processor.get_frame_number()?,
+                frame_data,
+                total_frames: processor.get_total_frames()?,
+            };
+
+            match broadcaster.broadcast(round_id, &frame_response) {
+                Ok(_) => println!("Successfully broadcasted frame"),
+                Err(e) => println!("Error broadcasting frame: {:?}", e),
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            println!("Error encoding frame: {:?}", e);
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Frame encoding failed: {:?}", e),
+            )))
+        }
+    }
 }
 
 fn send_response(
