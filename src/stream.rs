@@ -25,7 +25,7 @@ use opencv::{
 #[derive(Deserialize)]
 #[allow(non_snake_case, dead_code)]
 struct ProcessRequest {
-    phase: String, // "non_dealing_stream", "dealing_stage", "switch_to_dealing", "return_to_non_dealing"
+    phase: String, // "non_dealing", "dealing", "stop"
     game: String,
     host: String,
     roundId: String,
@@ -280,6 +280,20 @@ fn handle_connection(
                 }
             });
         }
+        "stop" => {
+            // Clear all connections
+            let mut conns = broadcaster.connections.lock().unwrap();
+            conns.clear(); // Clear ALL connections, not just for this round
+
+            // Completely remove the game stream state
+            let mut gs = game_streams.lock().unwrap();
+            gs.remove(&request.game); // Remove the entire game stream instead of just modifying it
+
+            let response = ProcessResponse::Completed {
+                message: "Streaming stopped".to_string(),
+            };
+            send_response(stream, &response)?;
+        }
         _ => {
             let error = ProcessResponse::Error {
                 message: "Invalid request type".to_string(),
@@ -313,11 +327,17 @@ fn handle_non_dealing_stream(
     }
 
     let mut frame = Mat::default();
-    let mut frame_count = 0;
+    let mut _frame_count = 0;
 
     loop {
+        // Check if game stream still exists
         {
             let gs = game_streams.lock().unwrap();
+            if !gs.contains_key(game_type) {
+                println!("Game stream stopped, ending non-dealing stream");
+                return Ok(());
+            }
+
             if let Some(current_stream) = gs.get(game_type) {
                 if current_stream.stage == StreamingStage::Dealing {
                     println!("Switching to dealing stage");
@@ -331,9 +351,6 @@ fn handle_non_dealing_stream(
             processor.reset_frame_count()?;
             continue;
         }
-
-        frame_count += 1;
-        // println!("Processing frame #{}", frame_count);
 
         send_frame(&frame, &processor, &broadcaster, round_id)?;
         std::thread::sleep(Duration::from_millis(33));
@@ -355,28 +372,26 @@ fn handle_dealing_stage(
         }
     }
 
-    // Process dealing specific frames with a new processor
     let dealing_video = get_dealing_video(game_type, host, game_state.winner.as_deref())?;
     let mut processor = VideoProcessor::new(&dealing_video)?;
 
     let mut frame = Mat::default();
     while processor.source.read(&mut frame)? {
-        // Apply game state specific modifications
+        // Check if game stream still exists
+        {
+            let gs = game_streams.lock().unwrap();
+            if !gs.contains_key(game_type) {
+                println!("Game stream stopped, ending dealing stream");
+                return Ok(());
+            }
+        }
+
         processor.process_dealing_frame(&mut frame, &game_state)?;
-        // println!("Processing frame: {}", processor.get_frame_number()?);
         send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
         std::thread::sleep(Duration::from_millis(33));
     }
 
-    {
-        // After processing, return to non-dealing stage
-        let mut gs = game_streams.lock().unwrap();
-        if let Some(game_stream) = gs.get_mut(game_type) {
-            game_stream.stage = StreamingStage::NonDealing;
-            game_stream.game_state = None;
-        }
-    }
-
+    // No need to set back to non-dealing since the stream might have been stopped
     Ok(())
 }
 
