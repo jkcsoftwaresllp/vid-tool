@@ -388,10 +388,8 @@ fn handle_dealing_stage(
 
         processor.process_dealing_frame(&mut frame, &game_state)?;
         send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
-        std::thread::sleep(Duration::from_millis(33));
     }
 
-    // No need to set back to non-dealing since the stream might have been stopped
     Ok(())
 }
 
