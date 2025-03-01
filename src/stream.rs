@@ -13,7 +13,7 @@ use tokio::time::Duration;
 use serde::{Deserialize, Serialize};
 
 // Import GameData from vid module
-use crate::vid::VideoProcessor;
+use crate::vid::{GameData, VideoProcessor};
 
 // Add OpenCV imports
 use opencv::{
@@ -313,7 +313,7 @@ fn handle_non_dealing_stream(
     round_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input_video = "assets/videos/re4.mp4".to_string();
-    let mut processor = VideoProcessor::new(&input_video)?;
+    let mut processor = VideoProcessor::new(&input_video, "output_blab.mp4")?;
 
     {
         let mut gs = game_streams.lock().unwrap();
@@ -373,7 +373,7 @@ fn handle_dealing_stage(
     }
 
     let dealing_video = get_dealing_video(game_type, host, game_state.winner.as_deref())?;
-    let mut processor = VideoProcessor::new(&dealing_video)?;
+    let mut processor = VideoProcessor::new(&dealing_video, "output_test_new.mp4")?;
 
     let mut frame = Mat::default();
     while processor.source.read(&mut frame)? {
@@ -386,7 +386,12 @@ fn handle_dealing_stage(
             }
         }
 
-        processor.process_dealing_frame(&mut frame, &game_state)?;
+        let game_data = GameData {
+            card_assets: vec!["card1.jpg".to_string()],
+        };
+
+        let placements = processor.detect_placeholders(&frame, &game_data)?;
+        processor.process_frame(&mut frame, &placements)?;
         send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
     }
 
@@ -404,9 +409,9 @@ fn send_frame(
     let frame_data = base64::encode(&buffer);
 
     let frame_response = ProcessResponse::Frame {
-        frame_number: processor.get_frame_number()?,
+        frame_number: 12i32,
         frame_data,
-        total_frames: processor.get_total_frames()?,
+        total_frames: 552i32,
     };
 
     // println!("Broadcasting frame to round: {}", round_id);
@@ -433,12 +438,13 @@ fn get_dealing_video(
     let _random_num = rand::thread_rng().gen_range(1..=9);
 
     match game_type {
-        "ANDAR_BAHAR_TWO" | "TEEN_PATTI" => {
+        "ANDAR_BAHAR_TWO" | "TEEN_PATTI" | "LUCKY7A" | "LUCKY7B" | "ANDAR_BAHAR"
+        | "DRAGON_TIGER_LION" | "DRAGON_TIGER" => {
             let vpath = format!(
                 "assets/videos/{}/{}/{}_{}.mp4",
                 game_type,
                 host,
-                winner.unwrap_or("default"),
+                winner.unwrap_or("high"),
                 "1"
             );
 
