@@ -4,8 +4,8 @@ use opencv::{
     prelude::*,
     videoio,
 };
-use std::collections::HashMap;
 use std::error::Error;
+use std::{collections::HashMap, path::PathBuf};
 
 #[allow(dead_code)]
 pub struct CardPlacement {
@@ -54,6 +54,23 @@ impl VideoProcessor {
             card_assets,
             output,
         })
+    }
+
+    pub fn get_card_asset_path(&self, card: &str) -> PathBuf {
+        let (suit, rank) = card.split_at(1);
+        let suit_name = match suit {
+            "H" => "hearts",
+            "D" => "diamond",
+            "C" => "clubs",
+            "S" => "spades",
+            _ => "unknown",
+        };
+
+        PathBuf::from(format!(
+            "assets/cards/{}_{}.jpg",
+            suit_name,
+            rank.to_lowercase()
+        ))
     }
 
     pub fn reset_frame_count(&mut self) -> Result<(), Box<dyn Error>> {

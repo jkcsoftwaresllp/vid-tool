@@ -377,7 +377,6 @@ fn handle_dealing_stage(
 
     let mut frame = Mat::default();
     while processor.source.read(&mut frame)? {
-        // Check if game stream still exists
         {
             let gs = game_streams.lock().unwrap();
             if !gs.contains_key(game_type) {
@@ -386,11 +385,58 @@ fn handle_dealing_stage(
             }
         }
 
-        let game_data = GameData {
-            // card_assets: vec!["card1.jpg".to_string()],
-            // card_assets: vec!["clubs_6.jpg".to_string()],
-            card_assets: vec!["assets/cards/clubs_6.jpg".to_string()],
-        };
+        // Create GameData with properly formatted card asset paths
+        let mut card_assets = Vec::new();
+
+        // Add joker card if present
+        if let Some(joker) = &game_state.cards.jokerCard {
+            card_assets.push(
+                processor
+                    .get_card_asset_path(joker)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+
+        // Add blind card if present
+        if let Some(blind) = &game_state.cards.blindCard {
+            card_assets.push(
+                processor
+                    .get_card_asset_path(blind)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+
+        // Add player cards
+        for card in &game_state.cards.playerA {
+            card_assets.push(
+                processor
+                    .get_card_asset_path(card)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        for card in &game_state.cards.playerB {
+            card_assets.push(
+                processor
+                    .get_card_asset_path(card)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        if let Some(player_c_cards) = &game_state.cards.playerC {
+            for card in player_c_cards {
+                card_assets.push(
+                    processor
+                        .get_card_asset_path(card)
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+        }
+
+        let game_data = GameData { card_assets };
 
         let placements = processor.detect_placeholders(&frame, &game_data)?;
         processor.process_frame(&mut frame, &placements)?;

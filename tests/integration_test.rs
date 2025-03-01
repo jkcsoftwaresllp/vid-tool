@@ -1,4 +1,5 @@
 use indicatif::{ProgressBar, ProgressStyle};
+use serde_json::json;
 use std::error::Error;
 use std::path::PathBuf;
 use vid_tool::{vid::GameData, vid::VideoProcessor};
@@ -15,23 +16,63 @@ fn test_main() -> Result<(), Box<dyn Error>> {
             .progress_chars("#>-"),
     );
 
-    // Verify input files exist
-    let input_video = "assets/videos/TEEN_PATTI/HostA/playerA_1.mp4";
-    let card1_path = "card1.jpg";
-    let card2_path = "card2.jpg";
+    // Test data based on the provided game stream
+    let game_state = json!({
+        "gameType": "TEEN_PATTI",
+        "roundId": "TP1_1740827233326",
+        "status": "dealing",
+        "cards": {
+            "jokerCard": null,
+            "blindCard": "CQ",
+            "playerA": ["C8", "C9", "C10"],
+            "playerB": ["S4", "H4", "SK"],
+            "playerC": []
+        },
+        "winner": "playerA",
+        "startTime": 124
+    });
 
-    for path in &[input_video, card1_path, card2_path] {
-        if !std::path::Path::new(path).exists() {
-            pb.finish_with_message("Error: Missing input file");
-            return Err(format!("Input file not found: {}", path).into());
-        }
+    // Set up paths
+    let input_video = "assets/videos/TEEN_PATTI/HostA/playerA_1.mp4";
+    let output_video = "test_output.mp4";
+
+    // Initialize VideoProcessor
+    let mut processor = VideoProcessor::new(input_video, output_video)?;
+
+    // Create GameData with card assets
+    let mut card_assets = Vec::new();
+
+    // Add blind card
+    if let Some(blind) = game_state["cards"]["blindCard"].as_str() {
+        card_assets.push(
+            processor
+                .get_card_asset_path(blind)
+                .to_string_lossy()
+                .to_string(),
+        );
     }
 
-    let mut processor = VideoProcessor::new(input_video)?;
+    // Add player A cards
+    for card in game_state["cards"]["playerA"].as_array().unwrap() {
+        card_assets.push(
+            processor
+                .get_card_asset_path(card.as_str().unwrap())
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
 
-    let game_data = GameData {
-        card_assets: vec![card1_path.to_string().into(), card2_path.to_string().into()],
-    };
+    // Add player B cards
+    for card in game_state["cards"]["playerB"].as_array().unwrap() {
+        card_assets.push(
+            processor
+                .get_card_asset_path(card.as_str().unwrap())
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+
+    let game_data = GameData { card_assets };
 
     println!("Starting video processing...");
 
@@ -43,7 +84,8 @@ fn test_main() -> Result<(), Box<dyn Error>> {
 
     pb.finish_with_message("Video processing completed!");
 
-    assert!(PathBuf::from("output.mp4").exists());
+    // Verify output video was created
+    assert!(PathBuf::from(output_video).exists());
 
     Ok(())
 }
