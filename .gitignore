@@ -1,4 +1,7 @@
 /target
 /.idea
 *.png
+*.jpg
 *.mp4
+
+assets/*

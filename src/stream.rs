@@ -387,7 +387,9 @@ fn handle_dealing_stage(
         }
 
         let game_data = GameData {
-            card_assets: vec!["card1.jpg".to_string()],
+            // card_assets: vec!["card1.jpg".to_string()],
+            // card_assets: vec!["clubs_6.jpg".to_string()],
+            card_assets: vec!["assets/cards/clubs_6.jpg".to_string()],
         };
 
         let placements = processor.detect_placeholders(&frame, &game_data)?;

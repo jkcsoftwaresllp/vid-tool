@@ -34,7 +34,7 @@ impl VideoProcessor {
         let height = source.get(videoio::CAP_PROP_FRAME_HEIGHT)? as i32;
 
         // Create VideoWriter
-        let fourcc = videoio::VideoWriter::fourcc('X', '2', '6', '4')?; // Using H.264 codec
+        let fourcc = videoio::VideoWriter::fourcc('a', 'v', 'c', '1')?; // Using H.264 codec
         let mut output = videoio::VideoWriter::new(
             output_path,
             fourcc,
