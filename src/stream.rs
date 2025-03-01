@@ -13,7 +13,7 @@ use tokio::time::Duration;
 use serde::{Deserialize, Serialize};
 
 // Import GameData from vid module
-use crate::vid::VideoProcessor;
+use crate::vid::{GameData, VideoProcessor};
 
 // Add OpenCV imports
 use opencv::{
@@ -25,7 +25,7 @@ use opencv::{
 #[derive(Deserialize)]
 #[allow(non_snake_case, dead_code)]
 struct ProcessRequest {
-    phase: String, // "non_dealing_stream", "dealing_stage", "switch_to_dealing", "return_to_non_dealing"
+    phase: String, // "non_dealing", "dealing", "stop"
     game: String,
     host: String,
     roundId: String,
@@ -280,6 +280,20 @@ fn handle_connection(
                 }
             });
         }
+        "stop" => {
+            // Clear all connections
+            let mut conns = broadcaster.connections.lock().unwrap();
+            conns.clear(); // Clear ALL connections, not just for this round
+
+            // Completely remove the game stream state
+            let mut gs = game_streams.lock().unwrap();
+            gs.remove(&request.game); // Remove the entire game stream instead of just modifying it
+
+            let response = ProcessResponse::Completed {
+                message: "Streaming stopped".to_string(),
+            };
+            send_response(stream, &response)?;
+        }
         _ => {
             let error = ProcessResponse::Error {
                 message: "Invalid request type".to_string(),
@@ -299,7 +313,7 @@ fn handle_non_dealing_stream(
     round_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input_video = "assets/videos/re4.mp4".to_string();
-    let mut processor = VideoProcessor::new(&input_video)?;
+    let mut processor = VideoProcessor::new(&input_video, "output_blab.mp4")?;
 
     {
         let mut gs = game_streams.lock().unwrap();
@@ -313,11 +327,17 @@ fn handle_non_dealing_stream(
     }
 
     let mut frame = Mat::default();
-    let mut frame_count = 0;
+    let mut _frame_count = 0;
 
     loop {
+        // Check if game stream still exists
         {
             let gs = game_streams.lock().unwrap();
+            if !gs.contains_key(game_type) {
+                println!("Game stream stopped, ending non-dealing stream");
+                return Ok(());
+            }
+
             if let Some(current_stream) = gs.get(game_type) {
                 if current_stream.stage == StreamingStage::Dealing {
                     println!("Switching to dealing stage");
@@ -331,9 +351,6 @@ fn handle_non_dealing_stream(
             processor.reset_frame_count()?;
             continue;
         }
-
-        frame_count += 1;
-        // println!("Processing frame #{}", frame_count);
 
         send_frame(&frame, &processor, &broadcaster, round_id)?;
         std::thread::sleep(Duration::from_millis(33));
@@ -355,26 +372,27 @@ fn handle_dealing_stage(
         }
     }
 
-    // Process dealing specific frames with a new processor
     let dealing_video = get_dealing_video(game_type, host, game_state.winner.as_deref())?;
-    let mut processor = VideoProcessor::new(&dealing_video)?;
+    let mut processor = VideoProcessor::new(&dealing_video, "output_test_new.mp4")?;
 
     let mut frame = Mat::default();
     while processor.source.read(&mut frame)? {
-        // Apply game state specific modifications
-        processor.process_dealing_frame(&mut frame, &game_state)?;
-        // println!("Processing frame: {}", processor.get_frame_number()?);
-        send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
-        std::thread::sleep(Duration::from_millis(33));
-    }
-
-    {
-        // After processing, return to non-dealing stage
-        let mut gs = game_streams.lock().unwrap();
-        if let Some(game_stream) = gs.get_mut(game_type) {
-            game_stream.stage = StreamingStage::NonDealing;
-            game_stream.game_state = None;
+        // Check if game stream still exists
+        {
+            let gs = game_streams.lock().unwrap();
+            if !gs.contains_key(game_type) {
+                println!("Game stream stopped, ending dealing stream");
+                return Ok(());
+            }
         }
+
+        let game_data = GameData {
+            card_assets: vec!["card1.jpg".to_string()],
+        };
+
+        let placements = processor.detect_placeholders(&frame, &game_data)?;
+        processor.process_frame(&mut frame, &placements)?;
+        send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
     }
 
     Ok(())
@@ -391,9 +409,9 @@ fn send_frame(
     let frame_data = base64::encode(&buffer);
 
     let frame_response = ProcessResponse::Frame {
-        frame_number: processor.get_frame_number()?,
+        frame_number: 12i32,
         frame_data,
-        total_frames: processor.get_total_frames()?,
+        total_frames: 552i32,
     };
 
     // println!("Broadcasting frame to round: {}", round_id);
@@ -420,12 +438,13 @@ fn get_dealing_video(
     let _random_num = rand::thread_rng().gen_range(1..=9);
 
     match game_type {
-        "ANDAR_BAHAR_TWO" | "TEEN_PATTI" => {
+        "ANDAR_BAHAR_TWO" | "TEEN_PATTI" | "LUCKY7A" | "LUCKY7B" | "ANDAR_BAHAR"
+        | "DRAGON_TIGER_LION" | "DRAGON_TIGER" => {
             let vpath = format!(
                 "assets/videos/{}/{}/{}_{}.mp4",
                 game_type,
                 host,
-                winner.unwrap_or("default"),
+                winner.unwrap_or("high"),
                 "1"
             );
 
