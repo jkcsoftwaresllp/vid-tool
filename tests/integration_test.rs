@@ -42,16 +42,6 @@ fn test_main() -> Result<(), Box<dyn Error>> {
     // Create GameData with card assets
     let mut card_assets = Vec::new();
 
-    // Add blind card
-    if let Some(blind) = game_state["cards"]["blindCard"].as_str() {
-        card_assets.push(
-            processor
-                .get_card_asset_path(blind)
-                .to_string_lossy()
-                .to_string(),
-        );
-    }
-
     // Add player A cards
     for card in game_state["cards"]["playerA"].as_array().unwrap() {
         card_assets.push(

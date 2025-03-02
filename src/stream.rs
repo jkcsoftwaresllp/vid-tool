@@ -13,7 +13,7 @@ use tokio::time::Duration;
 use serde::{Deserialize, Serialize};
 
 // Import GameData from vid module
-use crate::vid::{GameData, VideoProcessor};
+use crate::vid::{create_placements_from_stored, GameData, VideoProcessor};
 
 // Add OpenCV imports
 use opencv::{
@@ -72,6 +72,12 @@ enum ProcessResponse {
         frame_number: i32,
         frame_data: String, // Base64 encoded frame
         total_frames: i32,
+    },
+
+    #[serde(rename = "transition")]
+    Transition {
+        transition_type: String,
+        duration: u32,
     },
 }
 
@@ -327,20 +333,25 @@ fn handle_non_dealing_stream(
     }
 
     let mut frame = Mat::default();
-    let mut _frame_count = 0;
 
     loop {
-        // Check if game stream still exists
         {
             let gs = game_streams.lock().unwrap();
             if !gs.contains_key(game_type) {
                 println!("Game stream stopped, ending non-dealing stream");
                 return Ok(());
             }
-
             if let Some(current_stream) = gs.get(game_type) {
                 if current_stream.stage == StreamingStage::Dealing {
-                    println!("Switching to dealing stage");
+                    // Signal transition before leaving non-dealing mode.
+                    broadcaster.broadcast(
+                        round_id,
+                        &ProcessResponse::Transition {
+                            transition_type: "fade".to_string(),
+                            duration: 1000, // 1 second fade-out/in transition
+                        },
+                    )?;
+                    println!("Switching to dealing stage with transition");
                     return Ok(());
                 }
             }
@@ -375,7 +386,12 @@ fn handle_dealing_stage(
     let dealing_video = get_dealing_video(game_type, host, game_state.winner.as_deref())?;
     let mut processor = VideoProcessor::new(&dealing_video, "output_test_new.mp4")?;
 
+    // Load pre-processed placeholder data
+    let placeholder_data = processor.load_placeholders(&dealing_video.replace(".mp4", ".json"))?;
+
     let mut frame = Mat::default();
+    let mut frame_number = 0;
+
     while processor.source.read(&mut frame)? {
         {
             let gs = game_streams.lock().unwrap();
@@ -387,26 +403,6 @@ fn handle_dealing_stage(
 
         // Create GameData with properly formatted card asset paths
         let mut card_assets = Vec::new();
-
-        // Add joker card if present
-        if let Some(joker) = &game_state.cards.jokerCard {
-            card_assets.push(
-                processor
-                    .get_card_asset_path(joker)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-
-        // Add blind card if present
-        if let Some(blind) = &game_state.cards.blindCard {
-            card_assets.push(
-                processor
-                    .get_card_asset_path(blind)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
 
         // Add player cards
         for card in &game_state.cards.playerA {
@@ -425,22 +421,22 @@ fn handle_dealing_stage(
                     .to_string(),
             );
         }
-        if let Some(player_c_cards) = &game_state.cards.playerC {
-            for card in player_c_cards {
-                card_assets.push(
-                    processor
-                        .get_card_asset_path(card)
-                        .to_string_lossy()
-                        .to_string(),
-                );
-            }
-        }
 
         let game_data = GameData { card_assets };
 
-        let placements = processor.detect_placeholders(&frame, &game_data)?;
-        processor.process_frame(&mut frame, &placements)?;
+        if let Some(frame_data) = placeholder_data
+            .placeholders
+            .iter()
+            .find(|fp| fp.frame_number == frame_number)
+        {
+            // Convert stored positions back to OpenCV types
+            let placements = create_placements_from_stored(&frame_data.positions, &game_data)?;
+
+            processor.process_frame(&mut frame, &placements)?;
+        }
+
         send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
+        frame_number += 1;
     }
 
     Ok(())

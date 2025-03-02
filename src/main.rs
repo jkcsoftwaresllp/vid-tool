@@ -9,54 +9,70 @@ mod vid;
 use std::collections::HashMap;
 use std::error::Error;
 
-use image::ImageFormat;
-use std::fs;
-use std::path::Path;
+use std::env;
+use vid_tool::vid::VideoProcessor;
 
-fn convert_png_to_jpg() -> Result<(), Box<dyn Error>> {
-    // Create output directory if it doesn't exist
-    fs::create_dir_all("assets/cards_jpg")?;
+fn main() {
+    let args: Vec<String> = env::args().collect();
 
-    // Read all files from png directory
-    let entries = fs::read_dir("assets/cards_png")?;
+    if args.len() > 1 && args[1] == "preprocess" {
+        println!("Starting video pre-processing...");
+        if let Err(e) = preprocess_videos() {
+            eprintln!("Error during pre-processing: {}", e);
+            return;
+        }
+        println!("Pre-processing completed successfully!");
+        return;
+    }
 
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
+    let socket_path = "/tmp/video-processor.sock";
+    stream::start_streaming(socket_path).expect("Error running streaming service");
+}
 
-        // Skip if not a PNG file
-        if path.extension().and_then(|s| s.to_str()) != Some("png") {
+fn preprocess_videos() -> Result<(), Box<dyn Error>> {
+    let video_dir = "assets/videos";
+
+    // Process each game type directory
+    for game_entry in std::fs::read_dir(video_dir)? {
+        let game_entry = game_entry?;
+        if !game_entry.file_type()?.is_dir() {
             continue;
         }
 
-        // Get the filename without extension
-        let file_stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or("Invalid filename")?;
+        let game_path = game_entry.path();
 
-        // Create output path
-        let output_path = format!("assets/cards_jpg/{}.jpg", file_stem);
+        // Process each host directory
+        for host_entry in std::fs::read_dir(&game_path)? {
+            let host_entry = host_entry?;
+            if !host_entry.file_type()?.is_dir() {
+                continue;
+            }
 
-        println!("Converting: {} -> {}", path.display(), output_path);
+            let host_path = host_entry.path();
 
-        // Open the image
-        let img = image::open(&path)?;
+            // Process each video file
+            for video_entry in std::fs::read_dir(&host_path)? {
+                let video_entry = video_entry?;
+                if !video_entry
+                    .path()
+                    .extension()
+                    .map_or(false, |ext| ext == "mp4")
+                {
+                    continue;
+                }
 
-        // Save as JPG
-        img.save_with_format(&output_path, ImageFormat::Jpeg)?;
+                let video_path = video_entry.path();
+                let placeholder_path = video_path.with_extension("json");
+
+                println!("Processing {}", video_path.display());
+
+                let mut processor =
+                    VideoProcessor::new(video_path.to_str().unwrap(), "dummy_output.mp4")?;
+
+                processor.scan_and_save_placeholders(placeholder_path.to_str().unwrap())?;
+            }
+        }
     }
 
-    println!("Conversion completed successfully!");
     Ok(())
-}
-fn main() {
-    // if let Err(e) = convert_png_to_jpg() {
-    //     eprintln!("Error during conversion: {}", e);
-    // }
-
-    let socket_path = "/tmp/video-processor.sock";
-
-    stream::start_streaming(socket_path).expect("Error running streaming service");
-    // TODO: Handle error appropriately
 }

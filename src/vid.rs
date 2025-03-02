@@ -18,10 +18,69 @@ pub struct GameData {
     pub card_assets: Vec<String>,
 }
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct PlaceholderData {
+    video_path: String,
+    frame_count: i32,
+    pub placeholders: Vec<FramePlaceholders>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FramePlaceholders {
+    pub frame_number: i32,
+    pub positions: Vec<PlaceholderPosition>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PlaceholderPosition {
+    contour_points: Vec<(i32, i32)>, // Store points as tuples
+    rect: (i32, i32, i32, i32),      // x, y, width, height
+}
+
 pub struct VideoProcessor {
     pub source: videoio::VideoCapture,
     card_assets: HashMap<String, Mat>,
     pub output: videoio::VideoWriter,
+}
+
+pub fn create_placements_from_stored(
+    positions: &[PlaceholderPosition],
+    game_data: &GameData,
+) -> Result<Vec<CardPlacement>, Box<dyn Error>> {
+    let mut placements = Vec::new();
+
+    // Get player cards only
+    let player_cards = &game_data.card_assets;
+
+    for (i, position) in positions.iter().enumerate() {
+        if i >= player_cards.len() {
+            break;
+        }
+
+        // Convert stored rect tuple back to OpenCV Rect
+        let rect = core::Rect::new(
+            position.rect.0, // x
+            position.rect.1, // y
+            position.rect.2, // width
+            position.rect.3, // height
+        );
+
+        // Convert stored contour points back to OpenCV Points
+        let mut contour = Vector::new();
+        for &(x, y) in &position.contour_points {
+            contour.push(Point::new(x, y));
+        }
+
+        placements.push(CardPlacement {
+            position: rect,
+            card_asset_path: player_cards[i].clone(),
+            contour,
+        });
+    }
+
+    Ok(placements)
 }
 
 impl VideoProcessor {
@@ -54,6 +113,96 @@ impl VideoProcessor {
             card_assets,
             output,
         })
+    }
+
+    pub fn scan_and_save_placeholders(&mut self, output_path: &str) -> Result<(), Box<dyn Error>> {
+        let mut placeholder_data = PlaceholderData {
+            video_path: self.source.get_backend_name()?.to_string(),
+            frame_count: self.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32,
+            placeholders: Vec::new(),
+        };
+
+        let mut frame = Mat::default();
+        let mut frame_number = 0;
+
+        while self.source.read(&mut frame)? {
+            let mut positions = Vec::new();
+
+            // Detect green placeholders
+            let mut mask = Mat::default();
+            let threshold = 30.0;
+
+            let lower_green = core::Scalar::new(0.0, 255.0 - threshold, 0.0, 0.0);
+            let upper_green = core::Scalar::new(threshold, 255.0, threshold, 0.0);
+
+            core::in_range(&frame, &lower_green, &upper_green, &mut mask)?;
+
+            let mut contours = Vector::<Vector<Point>>::new();
+            imgproc::find_contours(
+                &mask,
+                &mut contours,
+                imgproc::RETR_EXTERNAL,
+                imgproc::CHAIN_APPROX_SIMPLE,
+                Point::new(0, 0),
+            )?;
+
+            for contour in contours.iter() {
+                let area = imgproc::contour_area(&contour, false)?;
+                if area < 100.0 {
+                    continue;
+                }
+
+                let rect = imgproc::bounding_rect(&contour)?;
+                let contour_points: Vec<(i32, i32)> = contour.iter().map(|p| (p.x, p.y)).collect();
+
+                positions.push(PlaceholderPosition {
+                    contour_points,
+                    rect: (rect.x, rect.y, rect.width, rect.height),
+                });
+            }
+
+            if !positions.is_empty() {
+                placeholder_data.placeholders.push(FramePlaceholders {
+                    frame_number,
+                    positions,
+                });
+            }
+
+            frame_number += 1;
+        }
+
+        // Save to file
+        let file = std::fs::File::create(output_path)?;
+        serde_json::to_writer(file, &placeholder_data)?;
+
+        // Reset video position
+        self.reset_frame_count()?;
+
+        Ok(())
+    }
+
+    pub fn load_placeholders(&self, path: &str) -> Result<PlaceholderData, Box<dyn Error>> {
+        let file = std::fs::File::open(path)?;
+        let data: PlaceholderData = serde_json::from_reader(file)?;
+        Ok(data)
+    }
+
+    fn preprocess_videos() -> Result<(), Box<dyn Error>> {
+        let video_dir = "assets/videos";
+        for entry in std::fs::read_dir(video_dir)? {
+            let entry = entry?;
+            if entry.path().extension() == Some(std::ffi::OsStr::new("mp4")) {
+                let video_path = entry.path();
+                let placeholder_path = video_path.with_extension("json");
+
+                println!("Processing {}", video_path.display());
+                let mut processor =
+                    VideoProcessor::new(video_path.to_str().unwrap(), "dummy_output.mp4")?;
+
+                processor.scan_and_save_placeholders(placeholder_path.to_str().unwrap())?;
+            }
+        }
+        Ok(())
     }
 
     pub fn get_card_asset_path(&self, card: &str) -> PathBuf {
@@ -174,6 +323,88 @@ impl VideoProcessor {
         Ok(())
     }
 
+    pub fn process_frame_for_stream(
+        &mut self,
+        frame: &mut Mat,
+        game_data: &GameData,
+    ) -> Result<(), Box<dyn Error>> {
+        // ROI (Region of Interest) based detection
+        let frame_height = frame.rows();
+        let frame_width = frame.cols();
+
+        // Assume placeholders are in the middle third of the frame
+        let roi_y = frame_height / 3;
+        let roi_height = frame_height / 3;
+        let roi = core::Rect::new(0, roi_y, frame_width, roi_height);
+
+        let mut roi_frame = Mat::roi(frame, roi)?;
+
+        // Quick green detection in ROI
+        let mut mask = Mat::default();
+        let threshold = 30.0;
+
+        let lower_green = core::Scalar::new(0.0, 255.0 - threshold, 0.0, 0.0);
+        let upper_green = core::Scalar::new(threshold, 255.0, threshold, 0.0);
+
+        core::in_range(&roi_frame, &lower_green, &upper_green, &mut mask)?;
+
+        let mut contours = Vector::<Vector<Point>>::new();
+        imgproc::find_contours(
+            &mask,
+            &mut contours,
+            imgproc::RETR_EXTERNAL,
+            imgproc::CHAIN_APPROX_SIMPLE,
+            Point::new(0, roi_y), // Adjust points for ROI offset
+        )?;
+
+        let mut placements = Vec::new();
+        let player_cards = &game_data.card_assets;
+
+        // Process only the largest contours matching the number of expected cards
+        let mut valid_contours: Vec<(Vector<Point>, f64)> = contours
+            .iter()
+            .filter_map(|contour| {
+                let area = imgproc::contour_area(&contour, false).ok()?;
+                if area < 100.0 {
+                    return None;
+                }
+                Some((contour.clone(), area))
+            })
+            .collect();
+
+        // Sort by area to get the most prominent placeholders
+        valid_contours.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        valid_contours.truncate(player_cards.len());
+
+        // Sort left to right for consistent card placement
+        let mut position_contours: Vec<(Vector<Point>, core::Rect)> = valid_contours
+            .iter()
+            .filter_map(|(contour, _)| {
+                let rect = imgproc::bounding_rect(&contour).ok()?;
+                Some((contour.clone(), rect))
+            })
+            .collect();
+        position_contours.sort_by(|a, b| a.1.x.cmp(&b.1.x));
+
+        // Create placements
+        for (i, (contour, rect)) in position_contours.iter().enumerate() {
+            if i < player_cards.len() {
+                placements.push(CardPlacement {
+                    position: *rect,
+                    card_asset_path: player_cards[i].clone(),
+                    contour: contour.clone(),
+                });
+            }
+        }
+
+        // Process frame with placements
+        if !placements.is_empty() {
+            self.process_frame(frame, &placements)?;
+        }
+
+        Ok(())
+    }
+
     pub fn process_video(&mut self, game_data: &GameData) -> Result<(), Box<dyn Error>> {
         let mut frame = Mat::default();
         let total_frames = self.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32;
@@ -205,16 +436,14 @@ impl VideoProcessor {
         frame: &Mat,
         game_data: &GameData,
     ) -> Result<Vec<CardPlacement>, Box<dyn Error>> {
-        // Create mask for pure green color in BGR
         let mut mask = Mat::default();
-        let threshold = 30.0; // Tolerance for color detection
+        let threshold = 30.0;
 
         let lower_green = core::Scalar::new(0.0, 255.0 - threshold, 0.0, 0.0);
         let upper_green = core::Scalar::new(threshold, 255.0, threshold, 0.0);
 
         core::in_range(&frame, &lower_green, &upper_green, &mut mask)?;
 
-        // Find contours
         let mut contours = Vector::<Vector<Point>>::new();
         imgproc::find_contours(
             &mask,
@@ -225,23 +454,37 @@ impl VideoProcessor {
         )?;
 
         let mut placements = Vec::new();
+        let mut valid_contours: Vec<(Vector<Point>, core::Rect)> = contours
+            .iter()
+            .filter_map(|contour| {
+                let area = imgproc::contour_area(&contour, false).ok()?;
+                if area < 100.0 {
+                    return None;
+                }
+                let rect = imgproc::bounding_rect(&contour).ok()?;
+                Some((contour.clone(), rect))
+            })
+            .collect();
 
-        for contour in contours.iter() {
-            let area = imgproc::contour_area(&contour, false)?;
+        // Sort contours by x-coordinate (left to right)
+        valid_contours.sort_by(|a, b| a.1.x.cmp(&b.1.x));
 
-            if area < 100.0 {
-                // Adjust these thresholds as needed
-                continue;
+        // Skip blind card and joker card indices (they're at the beginning of card_assets)
+        let player_cards = if game_data.card_assets.len() > 2 {
+            &game_data.card_assets[2..]
+        } else {
+            &game_data.card_assets
+        };
+
+        // Match contours with player cards
+        for (i, (contour, rect)) in valid_contours.iter().enumerate() {
+            if i < player_cards.len() {
+                placements.push(CardPlacement {
+                    position: *rect,
+                    card_asset_path: player_cards[i].clone(),
+                    contour: contour.clone(),
+                });
             }
-
-            let rect = imgproc::bounding_rect(&contour)?;
-
-            // Centered around 1.51
-            placements.push(CardPlacement {
-                position: rect,
-                card_asset_path: game_data.card_assets[0].clone(),
-                contour: contour.clone(),
-            });
         }
 
         Ok(placements)
