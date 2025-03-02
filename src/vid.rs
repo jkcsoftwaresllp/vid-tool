@@ -49,9 +49,13 @@ pub fn create_placements_from_stored(
     positions: &[PlaceholderPosition],
     game_data: &GameData,
 ) -> Result<Vec<CardPlacement>, Box<dyn Error>> {
-    let mut placements = Vec::new();
+    // println!(
+    //     "Creating placements from {} positions for {} cards",
+    //     positions.len(),
+    //     game_data.card_assets.len()
+    // );
 
-    // Get player cards only
+    let mut placements = Vec::new();
     let player_cards = &game_data.card_assets;
 
     for (i, position) in positions.iter().enumerate() {
@@ -59,19 +63,21 @@ pub fn create_placements_from_stored(
             break;
         }
 
-        // Convert stored rect tuple back to OpenCV Rect
+        // println!("Processing position {} for card {}", i, player_cards[i]);
+
         let rect = core::Rect::new(
-            position.rect.0, // x
-            position.rect.1, // y
-            position.rect.2, // width
-            position.rect.3, // height
+            position.rect.0,
+            position.rect.1,
+            position.rect.2,
+            position.rect.3,
         );
 
-        // Convert stored contour points back to OpenCV Points
         let mut contour = Vector::new();
         for &(x, y) in &position.contour_points {
             contour.push(Point::new(x, y));
         }
+
+        // println!("Created placement with rect: {:?}", rect);
 
         placements.push(CardPlacement {
             position: rect,
@@ -80,6 +86,7 @@ pub fn create_placements_from_stored(
         });
     }
 
+    // println!("Created {} placements", placements.len());
     Ok(placements)
 }
 
@@ -185,24 +192,6 @@ impl VideoProcessor {
         let file = std::fs::File::open(path)?;
         let data: PlaceholderData = serde_json::from_reader(file)?;
         Ok(data)
-    }
-
-    fn preprocess_videos() -> Result<(), Box<dyn Error>> {
-        let video_dir = "assets/videos";
-        for entry in std::fs::read_dir(video_dir)? {
-            let entry = entry?;
-            if entry.path().extension() == Some(std::ffi::OsStr::new("mp4")) {
-                let video_path = entry.path();
-                let placeholder_path = video_path.with_extension("json");
-
-                println!("Processing {}", video_path.display());
-                let mut processor =
-                    VideoProcessor::new(video_path.to_str().unwrap(), "dummy_output.mp4")?;
-
-                processor.scan_and_save_placeholders(placeholder_path.to_str().unwrap())?;
-            }
-        }
-        Ok(())
     }
 
     pub fn get_card_asset_path(&self, card: &str) -> PathBuf {
@@ -337,7 +326,7 @@ impl VideoProcessor {
         let roi_height = frame_height / 3;
         let roi = core::Rect::new(0, roi_y, frame_width, roi_height);
 
-        let mut roi_frame = Mat::roi(frame, roi)?;
+        let roi_frame = Mat::roi(frame, roi)?;
 
         // Quick green detection in ROI
         let mut mask = Mat::default();
@@ -515,4 +504,23 @@ impl VideoProcessor {
         }
         Ok(())
     }
+}
+
+#[allow(dead_code)]
+fn _preprocess_videos() -> Result<(), Box<dyn Error>> {
+    let video_dir = "assets/videos";
+    for entry in std::fs::read_dir(video_dir)? {
+        let entry = entry?;
+        if entry.path().extension() == Some(std::ffi::OsStr::new("mp4")) {
+            let video_path = entry.path();
+            let placeholder_path = video_path.with_extension("json");
+
+            println!("Processing {}", video_path.display());
+            let mut processor =
+                VideoProcessor::new(video_path.to_str().unwrap(), "dummy_output.mp4")?;
+
+            processor.scan_and_save_placeholders(placeholder_path.to_str().unwrap())?;
+        }
+    }
+    Ok(())
 }

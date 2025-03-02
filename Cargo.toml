@@ -22,3 +22,6 @@ futures = "0.3.31"
 criterion = "0.4"
 sysinfo = "0.29"
 rand = "0.8"
+
+[build]
+rustflags = ["-Awarnings"]

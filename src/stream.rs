@@ -85,6 +85,7 @@ enum ProcessResponse {
 enum StreamingStage {
     NonDealing,
     Dealing,
+    DealingCompleted, // New state for completed dealing
 }
 
 // Removed the processor field from GameStream.
@@ -269,6 +270,43 @@ fn handle_connection(
                 }
             });
         }
+        /*"check_status" => {
+            let game_streams = game_streams.lock().unwrap();
+            if let Some(game_stream) = game_streams.get(&request.game) {
+                let response = ProcessResponse::Completed {
+                    message: format!("Current stage: {:?}", game_stream.stage),
+                };
+                send_response(stream, &response)?;
+            } else {
+                let response = ProcessResponse::Error {
+                    message: "Game stream not found".to_string(),
+                };
+                send_response(stream, &response)?;
+            }
+        }*/
+        "check_status" => {
+            let game_streams_lock = game_streams.lock().unwrap();
+            if let Some(game_stream) = game_streams_lock.get(&request.game) {
+                // Only send a completion response if the dealing stage is completed
+                if game_stream.stage == StreamingStage::DealingCompleted {
+                    let response = ProcessResponse::Completed {
+                        message: "COMPLETE".to_string(),
+                    };
+                    send_response(stream, &response)?;
+                } else {
+                    // If not completed, send the current status without completing
+                    let response = ProcessResponse::Received {
+                        message: format!("Current stage: {:?}", game_stream.stage),
+                    };
+                    send_response(stream, &response)?;
+                }
+            } else {
+                let response = ProcessResponse::Error {
+                    message: "Game stream not found".to_string(),
+                };
+                send_response(stream, &response)?;
+            }
+        }
         "dealing" => {
             let game_state = request
                 .game_state
@@ -375,6 +413,58 @@ fn handle_dealing_stage(
     broadcaster: Arc<WebSocketBroadcaster>,
     game_streams: Arc<Mutex<HashMap<String, GameStream>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Starting dealing stage for {}", game_type);
+    println!("Full game state: {:?}", game_state); // Add this debug line
+
+    let dealing_video = get_dealing_video(game_type, host, game_state.winner.as_deref())?;
+    let mut processor = VideoProcessor::new(&dealing_video, "output_test_new.mp4")?;
+
+    // Create GameData with properly formatted card asset paths
+    let mut card_assets = Vec::new();
+
+    // Debug the incoming card data
+    println!("Received cards data:");
+    println!("Joker: {:?}", game_state.cards.jokerCard);
+    println!("Blind: {:?}", game_state.cards.blindCard);
+    println!("Player A: {:?}", game_state.cards.playerA);
+    println!("Player B: {:?}", game_state.cards.playerB);
+    println!("Player C: {:?}", game_state.cards.playerC);
+
+    // Add player cards first
+    for card in &game_state.cards.playerA {
+        let asset_path = processor
+            .get_card_asset_path(card)
+            .to_string_lossy()
+            .to_string();
+        println!("Adding Player A card: {} -> {}", card, asset_path);
+        card_assets.push(asset_path);
+    }
+
+    for card in &game_state.cards.playerB {
+        let asset_path = processor
+            .get_card_asset_path(card)
+            .to_string_lossy()
+            .to_string();
+        println!("Adding Player B card: {} -> {}", card, asset_path);
+        card_assets.push(asset_path);
+    }
+
+    println!("Final card assets vector: {:?}", card_assets);
+
+    // Create game data
+    let game_data = GameData { card_assets };
+
+    // Load and verify placeholder data
+    let placeholder_path = dealing_video.replace(".mp4", ".json");
+    println!("Loading placeholder data from: {}", placeholder_path);
+
+    let placeholder_data = processor.load_placeholders(&placeholder_path)?;
+    println!(
+        "Loaded {} frames of placeholder data",
+        placeholder_data.placeholders.len()
+    );
+
+    // Now set the game stream state
     {
         let mut gs = game_streams.lock().unwrap();
         if let Some(game_stream) = gs.get_mut(game_type) {
@@ -382,12 +472,6 @@ fn handle_dealing_stage(
             game_stream.game_state = Some(game_state.clone());
         }
     }
-
-    let dealing_video = get_dealing_video(game_type, host, game_state.winner.as_deref())?;
-    let mut processor = VideoProcessor::new(&dealing_video, "output_test_new.mp4")?;
-
-    // Load pre-processed placeholder data
-    let placeholder_data = processor.load_placeholders(&dealing_video.replace(".mp4", ".json"))?;
 
     let mut frame = Mat::default();
     let mut frame_number = 0;
@@ -401,38 +485,20 @@ fn handle_dealing_stage(
             }
         }
 
-        // Create GameData with properly formatted card asset paths
-        let mut card_assets = Vec::new();
-
-        // Add player cards
-        for card in &game_state.cards.playerA {
-            card_assets.push(
-                processor
-                    .get_card_asset_path(card)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-        for card in &game_state.cards.playerB {
-            card_assets.push(
-                processor
-                    .get_card_asset_path(card)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-
-        let game_data = GameData { card_assets };
-
         if let Some(frame_data) = placeholder_data
             .placeholders
             .iter()
             .find(|fp| fp.frame_number == frame_number)
         {
-            // Convert stored positions back to OpenCV types
             let placements = create_placements_from_stored(&frame_data.positions, &game_data)?;
-
-            processor.process_frame(&mut frame, &placements)?;
+            if !placements.is_empty() {
+                println!(
+                    // "Processing frame {} with {} placements",
+                    frame_number,
+                    placements.len()
+                );
+                processor.process_frame(&mut frame, &placements)?;
+            }
         }
 
         send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
@@ -442,6 +508,7 @@ fn handle_dealing_stage(
     Ok(())
 }
 
+#[allow(unused_variables)]
 fn send_frame(
     frame: &Mat,
     processor: &VideoProcessor,
