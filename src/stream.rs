@@ -148,7 +148,7 @@ pub fn start_streaming(socket_path: &str) -> Result<(), Box<dyn std::error::Erro
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let ws_addr = "127.0.0.1:4500";
+            let ws_addr = "127.0.0.1:5500";
             let ws_listener = TcpListener::bind(ws_addr).await.unwrap();
             println!("WebSocket server listening on {}", ws_addr);
 
