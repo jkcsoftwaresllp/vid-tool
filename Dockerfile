@@ -23,8 +23,16 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # Create working directory
 WORKDIR /app
 
-# Copy project files
-COPY . .
+# Copy the source code first (without assets)
+# This is to improve build cache efficiency
+COPY ./src ./src
+COPY ./benches ./benches
+COPY ./tests ./tests
+COPY ./Cargo.toml ./Cargo.lock ./
+
+# Copy all assets directly to the container
+# This will include all your videos, JSON files, etc.
+COPY ./assets ./assets
 
 # Build the project
 RUN cargo build --release
