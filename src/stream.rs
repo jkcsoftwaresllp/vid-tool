@@ -492,11 +492,11 @@ fn handle_dealing_stage(
         {
             let placements = create_placements_from_stored(&frame_data.positions, &game_data)?;
             if !placements.is_empty() {
-                println!(
-                    // "Processing frame {} with {} placements",
-                    frame_number,
-                    placements.len()
-                );
+                // println!(
+                //     "Processing frame {} with {} placements",
+                //     frame_number,
+                //     placements.len()
+                // );
                 processor.process_frame(&mut frame, &placements)?;
             }
         }
