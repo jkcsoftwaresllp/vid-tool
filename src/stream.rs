@@ -505,6 +505,13 @@ fn handle_dealing_stage(
         frame_number += 1;
     }
 
+    {
+        let mut gs = game_streams.lock().unwrap();
+        if let Some(game_stream) = gs.get_mut(game_type) {
+            game_stream.stage = StreamingStage::DealingCompleted;
+        }
+    }
+
     Ok(())
 }
 
