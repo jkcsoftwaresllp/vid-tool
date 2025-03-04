@@ -13,7 +13,7 @@ use std::env;
 use vid_tool::vid::VideoProcessor;
 
 fn main() {
-    let ws_addr = "localhost:5500";
+    let ws_addr = "0.0.0.0:5500";
 
     let args: Vec<String> = env::args().collect();
 
