@@ -135,7 +135,7 @@ impl WebSocketBroadcaster {
     }
 }
 
-pub fn start_streaming(socket_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn start_streaming(socket_path: &str, ws_addr: &'static str) -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(socket_path);
     let unix_listener = UnixListener::bind(socket_path)?;
     println!("Video processor listening on {}", socket_path);
@@ -148,7 +148,6 @@ pub fn start_streaming(socket_path: &str) -> Result<(), Box<dyn std::error::Erro
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let ws_addr = "0.0.0.0:4500";
             let ws_listener = TcpListener::bind(ws_addr).await.unwrap();
             println!("WebSocket server listening on {}", ws_addr);
 

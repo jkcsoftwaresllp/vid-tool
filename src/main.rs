@@ -13,6 +13,8 @@ use std::env;
 use vid_tool::vid::VideoProcessor;
 
 fn main() {
+    let ws_addr = "localhost:5500";
+
     let args: Vec<String> = env::args().collect();
 
     if args.len() > 1 && args[1] == "preprocess" {
@@ -26,7 +28,7 @@ fn main() {
     }
 
     let socket_path = "/tmp/video-processor.sock";
-    stream::start_streaming(socket_path).expect("Error running streaming service");
+    stream::start_streaming(socket_path, ws_addr).expect("Error running streaming service");
 }
 
 fn preprocess_videos() -> Result<(), Box<dyn Error>> {

@@ -41,7 +41,7 @@ RUN cargo build --release
 RUN mkdir -p /tmp
 
 # Expose WebSocket port
-EXPOSE 4500
+EXPOSE 5500
 
 # Run the application
 CMD ["./target/release/vid-tool"]
