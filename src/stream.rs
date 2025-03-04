@@ -294,6 +294,7 @@ fn handle_connection(
                     let response = ProcessResponse::Completed {
                         message: "COMPLETE".to_string(),
                     };
+                    print!("DEALING VIDEO COMPLETED!");
                     send_response(stream, &response)?;
                 } else {
                     // If not completed, send the current status without completing
