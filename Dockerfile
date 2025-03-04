@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     python3-opencv \
     clang \
     libclang-dev \
+    ffmpeg \  # Added ffmpeg as suggested earlier
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust
@@ -23,16 +24,14 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # Create working directory
 WORKDIR /app
 
-# Copy the source code first (without assets)
-# This is to improve build cache efficiency
+# Copy the source code first
 COPY ./src ./src
 COPY ./benches ./benches
 COPY ./tests ./tests
 COPY ./Cargo.toml ./Cargo.lock ./
 
-# Copy all assets directly to the container
-# This will include all your videos, JSON files, etc.
-COPY ./assets ./assets
+# Create assets directory (but don't copy assets)
+RUN mkdir -p /app/assets
 
 # Build the project
 RUN cargo build --release

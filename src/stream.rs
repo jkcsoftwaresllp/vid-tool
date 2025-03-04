@@ -135,7 +135,10 @@ impl WebSocketBroadcaster {
     }
 }
 
-pub fn start_streaming(socket_path: &str, ws_addr: &'static str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn start_streaming(
+    socket_path: &str,
+    ws_addr: &'static str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(socket_path);
     let unix_listener = UnixListener::bind(socket_path)?;
     println!("Video processor listening on {}", socket_path);
@@ -380,12 +383,11 @@ fn handle_non_dealing_stream(
             }
             if let Some(current_stream) = gs.get(game_type) {
                 if current_stream.stage == StreamingStage::Dealing {
-                    // Signal transition before leaving non-dealing mode.
                     broadcaster.broadcast(
                         round_id,
                         &ProcessResponse::Transition {
                             transition_type: "fade".to_string(),
-                            duration: 1000, // 1 second fade-out/in transition
+                            duration: 1000,
                         },
                     )?;
                     println!("Switching to dealing stage with transition");
@@ -395,9 +397,18 @@ fn handle_non_dealing_stream(
         }
 
         if !processor.source.read(&mut frame)? {
-            println!("Reached end of video, resetting");
-            processor.reset_frame_count()?;
-            continue;
+            println!("Video playback completed");
+            // Remove this game stream from the active streams
+            let mut gs = game_streams.lock().unwrap();
+            gs.remove(game_type);
+            // Send a completion message
+            broadcaster.broadcast(
+                round_id,
+                &ProcessResponse::Completed {
+                    message: "Video playback completed".to_string(),
+                },
+            )?;
+            return Ok(()); // Exit the function instead of resetting
         }
 
         send_frame(&frame, &processor, &broadcaster, round_id)?;
