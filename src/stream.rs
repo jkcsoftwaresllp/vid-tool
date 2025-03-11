@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(unused_mut)]
+#![allow(unused_variables)]
+
 use futures::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -74,6 +78,12 @@ enum ProcessResponse {
     Frame {
         frame_number: i32,
         frame_data: String, // Base64 encoded frame
+        total_frames: i32,
+    },
+
+    #[serde(rename = "frameMetadata")]
+    FrameMetadata {
+        frame_number: i32,
         total_frames: i32,
     },
 
@@ -523,17 +533,40 @@ fn send_frame(
     round_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = Vector::new();
-    imgcodecs::imencode(".jpg", &frame, &mut buffer, &Vector::new())?;
-    let frame_data = base64::encode(&buffer);
 
-    let frame_response = ProcessResponse::Frame {
-        frame_number: processor.get_frame_number()?,
-        frame_data,
-        total_frames: processor.get_total_frames()?,
+    // Compress as JPEG with reduced quality (75% is usually good balance)
+    let params = Vector::from_slice(&[imgcodecs::IMWRITE_JPEG_QUALITY, 75]);
+    imgcodecs::imencode(".jpg", &frame, &mut buffer, &params)?;
+
+    // Get frame metadata
+    let frame_number = processor.get_frame_number()?;
+    let total_frames = processor.get_total_frames()?;
+
+    // Send metadata as JSON message first
+    let meta_response = ProcessResponse::FrameMetadata {
+        frame_number,
+        total_frames,
     };
+    broadcaster.broadcast(round_id, &meta_response)?;
 
-    // println!("Broadcasting frame to round: {}", round_id);
-    broadcaster.broadcast(round_id, &frame_response)?;
+    // Send binary data directly
+    let mut conns = broadcaster.connections.lock().unwrap();
+    if let Some(round_connections) = conns.get_mut(round_id) {
+        round_connections.retain(|tx| {
+            // Convert OpenCV buffer to Vec<u8>
+            let binary_data: Vec<u8> = buffer.to_vec();
+
+            // Convert Vec<u8> to Bytes using into()
+            match tx.send(Message::Binary(binary_data.into())) {
+                Ok(_) => true,
+                Err(e) => {
+                    println!("Failed to send binary frame: {:?}", e);
+                    false
+                }
+            }
+        });
+    }
+
     Ok(())
 }
 

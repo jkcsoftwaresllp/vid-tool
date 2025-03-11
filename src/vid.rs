@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(unused_mut)]
+#![allow(unused_variables)]
+
 use opencv::{
     core::{self, Point, Point2f, Vector},
     imgcodecs, imgproc,
@@ -566,11 +570,13 @@ impl VideoProcessor {
     }
 
     pub fn get_frame_number(&self) -> Result<i32, Box<dyn std::error::Error>> {
-        Ok(self.source.get(videoio::CAP_PROP_POS_FRAMES)? as i32)
+        let frame_number = self.source.get(videoio::CAP_PROP_POS_FRAMES)? as i32;
+        Ok(frame_number)
     }
 
     pub fn get_total_frames(&self) -> Result<i32, Box<dyn std::error::Error>> {
-        Ok(self.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32)
+        let total_frames = self.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32;
+        Ok(total_frames)
     }
 }
 
