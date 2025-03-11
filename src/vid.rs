@@ -9,8 +9,8 @@ use std::{collections::HashMap, path::PathBuf};
 
 #[allow(dead_code)]
 pub struct CardPlacement {
-    position: core::Rect,
-    card_asset_path: String,
+    pub position: core::Rect,
+    pub card_asset_path: String,
     contour: Vector<Point>, // Add this field
 }
 
@@ -20,23 +20,33 @@ pub struct GameData {
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PlaceholderAppearance {
+    pub frame_number: i32,
+    pub placeholder_count: usize,
+    pub new_placeholder_index: Option<usize>, // The index of the new placeholder that appeared
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PlaceholderData {
     video_path: String,
     frame_count: i32,
     pub placeholders: Vec<FramePlaceholders>,
+    pub placeholder_appearances: Vec<PlaceholderAppearance>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct FramePlaceholders {
     pub frame_number: i32,
     pub positions: Vec<PlaceholderPosition>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PlaceholderPosition {
     contour_points: Vec<(i32, i32)>, // Store points as tuples
     rect: (i32, i32, i32, i32),      // x, y, width, height
+    pub placeholder_id: usize,       // Add this field for consistent tracking
+    first_seen_frame: i32,           // Frame when this placeholder first appeared
 }
 
 pub struct VideoProcessor {
@@ -45,25 +55,23 @@ pub struct VideoProcessor {
     pub output: videoio::VideoWriter,
 }
 
+// Modify create_placements_from_stored to use placeholder_id for consistent ordering
 pub fn create_placements_from_stored(
     positions: &[PlaceholderPosition],
     game_data: &GameData,
 ) -> Result<Vec<CardPlacement>, Box<dyn Error>> {
-    // println!(
-    //     "Creating placements from {} positions for {} cards",
-    //     positions.len(),
-    //     game_data.card_assets.len()
-    // );
-
     let mut placements = Vec::new();
     let player_cards = &game_data.card_assets;
 
-    for (i, position) in positions.iter().enumerate() {
+    // Sort by placeholder_id (order of first appearance)
+    // This is critical for a consistent assignment of cards to placeholders
+    let mut sorted_positions = positions.to_vec();
+    sorted_positions.sort_by_key(|p| p.placeholder_id);
+
+    for (i, position) in sorted_positions.iter().enumerate() {
         if i >= player_cards.len() {
             break;
         }
-
-        // println!("Processing position {} for card {}", i, player_cards[i]);
 
         let rect = core::Rect::new(
             position.rect.0,
@@ -77,8 +85,6 @@ pub fn create_placements_from_stored(
             contour.push(Point::new(x, y));
         }
 
-        // println!("Created placement with rect: {:?}", rect);
-
         placements.push(CardPlacement {
             position: rect,
             card_asset_path: player_cards[i].clone(),
@@ -86,7 +92,6 @@ pub fn create_placements_from_stored(
         });
     }
 
-    // println!("Created {} placements", placements.len());
     Ok(placements)
 }
 
@@ -122,18 +127,29 @@ impl VideoProcessor {
         })
     }
 
+    // Enhance scan_and_save_placeholders to track placeholders with persistent IDs
     pub fn scan_and_save_placeholders(&mut self, output_path: &str) -> Result<(), Box<dyn Error>> {
         let mut placeholder_data = PlaceholderData {
             video_path: self.source.get_backend_name()?.to_string(),
             frame_count: self.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32,
             placeholders: Vec::new(),
+            placeholder_appearances: Vec::new(),
         };
 
         let mut frame = Mat::default();
         let mut frame_number = 0;
 
+        // Tracking structure for placeholders
+        // Key: placeholder_id, Value: (last_seen_centroid_x, last_seen_centroid_y)
+        // Tracking for persistent placeholders
+        let mut tracked_placeholders: HashMap<usize, (i32, i32)> = HashMap::new();
+        let mut next_id = 0; // next available placeholder_id
+
         while self.source.read(&mut frame)? {
-            let mut positions = Vec::new();
+            // Do not reinitialize placeholder_data here!
+            // Instead, for each frame, build a list of detected placeholders.
+            let mut frame_positions: Vec<PlaceholderPosition> = Vec::new();
+            let mut frame_new_ids: Vec<usize> = Vec::new();
 
             // Detect green placeholders
             let mut mask = Mat::default();
@@ -153,38 +169,82 @@ impl VideoProcessor {
                 Point::new(0, 0),
             )?;
 
+            // Store new placeholder detections for this frame
+            let mut frame_positions = Vec::new();
+            let mut frame_new_ids = Vec::new();
+
+            // Process each detected contour
             for contour in contours.iter() {
                 let area = imgproc::contour_area(&contour, false)?;
                 if area < 100.0 {
                     continue;
                 }
-
                 let rect = imgproc::bounding_rect(&contour)?;
                 let contour_points: Vec<(i32, i32)> = contour.iter().map(|p| (p.x, p.y)).collect();
 
-                positions.push(PlaceholderPosition {
+                // Determine centroid
+                let centroid_x = rect.x + rect.width / 2;
+                let centroid_y = rect.y + rect.height / 2;
+
+                // Try matching with tracked placeholders by distance
+                let mut matched_id = None;
+                const DISTANCE_THRESHOLD: f64 = 50.0; // adjust if needed
+
+                for (&id, &(prev_x, prev_y)) in &tracked_placeholders {
+                    let dx = (centroid_x - prev_x) as f64;
+                    let dy = (centroid_y - prev_y) as f64;
+                    if (dx * dx + dy * dy).sqrt() < DISTANCE_THRESHOLD {
+                        matched_id = Some(id);
+                        break;
+                    }
+                }
+
+                // If no match, assign a new ID
+                let placeholder_id = if let Some(id) = matched_id {
+                    tracked_placeholders.insert(id, (centroid_x, centroid_y));
+                    id
+                } else {
+                    let new_id = next_id;
+                    next_id += 1;
+                    tracked_placeholders.insert(new_id, (centroid_x, centroid_y));
+                    // Record this new placeholder appearance only once
+                    placeholder_data
+                        .placeholder_appearances
+                        .push(PlaceholderAppearance {
+                            frame_number,
+                            placeholder_count: tracked_placeholders.len(),
+                            new_placeholder_index: Some(new_id),
+                        });
+                    frame_new_ids.push(new_id);
+                    new_id
+                };
+
+                // Create the PlaceholderPosition with persistent id
+                frame_positions.push(PlaceholderPosition {
                     contour_points,
                     rect: (rect.x, rect.y, rect.width, rect.height),
+                    placeholder_id,
+                    first_seen_frame: frame_number,
                 });
             }
 
-            if !positions.is_empty() {
+            if !frame_positions.is_empty() {
+                // Sort positions by placeholder_id
+                frame_positions.sort_by_key(|p| p.placeholder_id);
+
                 placeholder_data.placeholders.push(FramePlaceholders {
                     frame_number,
-                    positions,
+                    positions: frame_positions,
                 });
             }
-
             frame_number += 1;
         }
 
-        // Save to file
+        // Save the complete placeholder_data to file after processing all frames.
         let file = std::fs::File::create(output_path)?;
         serde_json::to_writer(file, &placeholder_data)?;
 
-        // Reset video position
         self.reset_frame_count()?;
-
         Ok(())
     }
 
