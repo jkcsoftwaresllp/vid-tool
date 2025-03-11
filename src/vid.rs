@@ -564,6 +564,14 @@ impl VideoProcessor {
         }
         Ok(())
     }
+
+    pub fn get_frame_number(&self) -> Result<i32, Box<dyn std::error::Error>> {
+        Ok(self.source.get(videoio::CAP_PROP_POS_FRAMES)? as i32)
+    }
+
+    pub fn get_total_frames(&self) -> Result<i32, Box<dyn std::error::Error>> {
+        Ok(self.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32)
+    }
 }
 
 #[allow(dead_code)]

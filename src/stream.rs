@@ -527,9 +527,9 @@ fn send_frame(
     let frame_data = base64::encode(&buffer);
 
     let frame_response = ProcessResponse::Frame {
-        frame_number: 12i32,
+        frame_number: processor.get_frame_number()?,
         frame_data,
-        total_frames: 552i32,
+        total_frames: processor.get_total_frames()?,
     };
 
     // println!("Broadcasting frame to round: {}", round_id);
