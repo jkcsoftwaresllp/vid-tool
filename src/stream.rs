@@ -1,5 +1,5 @@
 use futures::{SinkExt, StreamExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
@@ -66,6 +66,9 @@ enum ProcessResponse {
 
     #[serde(rename = "received")]
     Received { message: String },
+
+    #[serde(rename = "card_placed")]
+    CardPlaced { card: String, frame_number: i32 },
 
     #[serde(rename = "frame")]
     Frame {
@@ -272,44 +275,6 @@ fn handle_connection(
                 }
             });
         }
-        /*"check_status" => {
-            let game_streams = game_streams.lock().unwrap();
-            if let Some(game_stream) = game_streams.get(&request.game) {
-                let response = ProcessResponse::Completed {
-                    message: format!("Current stage: {:?}", game_stream.stage),
-                };
-                send_response(stream, &response)?;
-            } else {
-                let response = ProcessResponse::Error {
-                    message: "Game stream not found".to_string(),
-                };
-                send_response(stream, &response)?;
-            }
-        }*/
-        "check_status" => {
-            let game_streams_lock = game_streams.lock().unwrap();
-            if let Some(game_stream) = game_streams_lock.get(&request.game) {
-                // Only send a completion response if the dealing stage is completed
-                if game_stream.stage == StreamingStage::DealingCompleted {
-                    let response = ProcessResponse::Completed {
-                        message: "COMPLETE".to_string(),
-                    };
-                    print!("DEALING VIDEO COMPLETED!");
-                    send_response(stream, &response)?;
-                } else {
-                    // If not completed, send the current status without completing
-                    let response = ProcessResponse::Received {
-                        message: format!("Current stage: {:?}", game_stream.stage),
-                    };
-                    send_response(stream, &response)?;
-                }
-            } else {
-                let response = ProcessResponse::Error {
-                    message: "Game stream not found".to_string(),
-                };
-                send_response(stream, &response)?;
-            }
-        }
         "dealing" => {
             let game_state = request
                 .game_state
@@ -319,10 +284,18 @@ fn handle_connection(
             let host = request.host.clone();
             let game = request.game.clone();
 
+            // Clone the stream for the new thread
+            let mut stream_clone = stream.try_clone()?;
+
             thread::spawn(move || {
-                if let Err(e) =
-                    handle_dealing_stage(&host, &game, game_state, broadcaster, game_streams)
-                {
+                if let Err(e) = handle_dealing_stage(
+                    &mut stream_clone,
+                    &host,
+                    &game,
+                    game_state,
+                    broadcaster,
+                    game_streams,
+                ) {
                     eprintln!("Error in dealing stream: {:?}", e);
                 }
             });
@@ -418,6 +391,7 @@ fn handle_non_dealing_stream(
 }
 
 fn handle_dealing_stage(
+    stream: &mut UnixStream,
     host: &String,
     game_type: &str,
     game_state: GameState,
@@ -425,57 +399,42 @@ fn handle_dealing_stage(
     game_streams: Arc<Mutex<HashMap<String, GameStream>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting dealing stage for {}", game_type);
-    println!("Full game state: {:?}", game_state); // Add this debug line
+    println!("Full game state: {:?}", game_state);
 
     let dealing_video = get_dealing_video(game_type, host, game_state.winner.as_deref())?;
     let mut processor = VideoProcessor::new(&dealing_video, "output_test_new.mp4")?;
 
-    // Create GameData with properly formatted card asset paths
+    // Build cards (for playerA and playerB)
     let mut card_assets = Vec::new();
-
-    // Debug the incoming card data
-    println!("Received cards data:");
-    println!("Joker: {:?}", game_state.cards.jokerCard);
-    println!("Blind: {:?}", game_state.cards.blindCard);
-    println!("Player A: {:?}", game_state.cards.playerA);
-    println!("Player B: {:?}", game_state.cards.playerB);
-    println!("Player C: {:?}", game_state.cards.playerC);
-
-    // Add player cards first
     for card in &game_state.cards.playerA {
         let asset_path = processor
             .get_card_asset_path(card)
             .to_string_lossy()
             .to_string();
-        println!("Adding Player A card: {} -> {}", card, asset_path);
         card_assets.push(asset_path);
     }
-
     for card in &game_state.cards.playerB {
         let asset_path = processor
             .get_card_asset_path(card)
             .to_string_lossy()
             .to_string();
-        println!("Adding Player B card: {} -> {}", card, asset_path);
         card_assets.push(asset_path);
     }
 
     println!("Final card assets vector: {:?}", card_assets);
 
-    // Create game data
     let game_data = GameData { card_assets };
 
-    // Load and verify placeholder data
+    // Load placeholder data (which contains placement/frame information)
     let placeholder_path = dealing_video.replace(".mp4", ".json");
     println!("Loading placeholder data from: {}", placeholder_path);
-
     let placeholder_data = processor.load_placeholders(&placeholder_path)?;
     println!(
-        "Loaded {} frames of placeholder data",
-        placeholder_data.placeholders.len()
+        "Loaded {} frames of placeholder data with {} appearance events",
+        placeholder_data.placeholders.len(),
+        placeholder_data.placeholder_appearances.len()
     );
 
-    // Now set the game stream state
     {
         let mut gs = game_streams.lock().unwrap();
         if let Some(game_stream) = gs.get_mut(game_type) {
@@ -487,27 +446,50 @@ fn handle_dealing_stage(
     let mut frame = Mat::default();
     let mut frame_number = 0;
 
-    while processor.source.read(&mut frame)? {
-        {
-            let gs = game_streams.lock().unwrap();
-            if !gs.contains_key(game_type) {
-                println!("Game stream stopped, ending dealing stream");
-                return Ok(());
-            }
-        }
+    // Create a mapping from placeholder index to card
+    let card_mapping: Vec<String> = game_data.card_assets.clone();
 
+    // Track which cards have been processed
+    let mut processed_cards: HashSet<String> = HashSet::new();
+
+    // Track the next appearance event to process
+    let mut next_appearance_index = 0;
+
+    // Track which placeholder IDs we've already seen
+    let mut processed_placeholder_ids: HashSet<usize> = HashSet::new();
+
+    while processor.source.read(&mut frame)? {
+        // Process placeholder appearances for this frame
         if let Some(frame_data) = placeholder_data
             .placeholders
             .iter()
             .find(|fp| fp.frame_number == frame_number)
         {
+            // Check for new placeholders in this frame
+            for position in &frame_data.positions {
+                if !processed_placeholder_ids.contains(&position.placeholder_id) {
+                    processed_placeholder_ids.insert(position.placeholder_id);
+
+                    // Assign the next available card to this placeholder
+                    let card_index = position.placeholder_id;
+                    if card_index < card_mapping.len() {
+                        let card_id = &card_mapping[card_index];
+                        if !processed_cards.contains(card_id) {
+                            let card_response = ProcessResponse::CardPlaced {
+                                card: card_id.clone(),
+                                frame_number,
+                            };
+                            println!("Card {} placed at frame {}", card_id, frame_number);
+                            send_response(stream, &card_response)?;
+                            processed_cards.insert(card_id.clone());
+                        }
+                    }
+                }
+            }
+
+            // Create placements for the frame
             let placements = create_placements_from_stored(&frame_data.positions, &game_data)?;
             if !placements.is_empty() {
-                // println!(
-                //     "Processing frame {} with {} placements",
-                //     frame_number,
-                //     placements.len()
-                // );
                 processor.process_frame(&mut frame, &placements)?;
             }
         }
@@ -516,10 +498,17 @@ fn handle_dealing_stage(
         frame_number += 1;
     }
 
+    // Update game stream state and send completion response
     {
         let mut gs = game_streams.lock().unwrap();
         if let Some(game_stream) = gs.get_mut(game_type) {
             game_stream.stage = StreamingStage::DealingCompleted;
+
+            // Send completion response
+            let completion_response = ProcessResponse::Completed {
+                message: "DEALING_COMPLETE".to_string(),
+            };
+            send_response(stream, &completion_response)?;
         }
     }
 
