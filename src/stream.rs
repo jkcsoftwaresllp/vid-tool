@@ -414,21 +414,35 @@ fn handle_dealing_stage(
     let dealing_video = get_dealing_video(game_type, host, game_state.winner.as_deref())?;
     let mut processor = VideoProcessor::new(&dealing_video, "output_test_new.mp4")?;
 
-    // Build cards (for playerA and playerB)
-    let mut card_assets = Vec::new();
+    // Create separate vectors for each player's cards
+    let mut player_a_assets = Vec::new();
     for card in &game_state.cards.playerA {
         let asset_path = processor
             .get_card_asset_path(card)
             .to_string_lossy()
             .to_string();
-        card_assets.push(asset_path);
+        player_a_assets.push(asset_path);
     }
+
+    let mut player_b_assets = Vec::new();
     for card in &game_state.cards.playerB {
         let asset_path = processor
             .get_card_asset_path(card)
             .to_string_lossy()
             .to_string();
-        card_assets.push(asset_path);
+        player_b_assets.push(asset_path);
+    }
+
+    // Interleave cards alternately (A, B, A, B, ...)
+    let mut card_assets = Vec::new();
+    let max_cards = std::cmp::max(player_a_assets.len(), player_b_assets.len());
+    for i in 0..max_cards {
+        if i < player_a_assets.len() {
+            card_assets.push(player_a_assets[i].clone());
+        }
+        if i < player_b_assets.len() {
+            card_assets.push(player_b_assets[i].clone());
+        }
     }
 
     println!("Final card assets vector: {:?}", card_assets);
@@ -461,9 +475,6 @@ fn handle_dealing_stage(
 
     // Track which cards have been processed
     let mut processed_cards: HashSet<String> = HashSet::new();
-
-    // Track the next appearance event to process
-    let mut next_appearance_index = 0;
 
     // Track which placeholder IDs we've already seen
     let mut processed_placeholder_ids: HashSet<usize> = HashSet::new();
