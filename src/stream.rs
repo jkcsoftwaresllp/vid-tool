@@ -85,6 +85,7 @@ enum ProcessResponse {
     FrameMetadata {
         frame_number: i32,
         total_frames: i32,
+        stream_type: String,
     },
 
     #[serde(rename = "transition")]
@@ -395,7 +396,7 @@ fn handle_non_dealing_stream(
             return Ok(()); // Exit the function instead of resetting
         }
 
-        send_frame(&frame, &processor, &broadcaster, round_id)?;
+        send_frame(&frame, &processor, &broadcaster, round_id, "non-dealing")?;
         std::thread::sleep(Duration::from_millis(33));
     }
 }
@@ -515,7 +516,13 @@ fn handle_dealing_stage(
             }
         }
 
-        send_frame(&frame, &processor, &broadcaster, &game_state.roundId)?;
+        send_frame(
+            &frame,
+            &processor,
+            &broadcaster,
+            &game_state.roundId,
+            "dealing",
+        )?;
         frame_number += 1;
     }
 
@@ -542,6 +549,7 @@ fn send_frame(
     processor: &VideoProcessor,
     broadcaster: &WebSocketBroadcaster,
     round_id: &str,
+    stream_type: &str, // Add this parameter
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = Vector::new();
 
@@ -557,6 +565,7 @@ fn send_frame(
     let meta_response = ProcessResponse::FrameMetadata {
         frame_number,
         total_frames,
+        stream_type: stream_type.to_string(),
     };
     broadcaster.broadcast(round_id, &meta_response)?;
 
