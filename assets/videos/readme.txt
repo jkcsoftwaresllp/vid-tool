@@ -1,10 +1,4 @@
-1st video of every host is transition (except for hostA):
-	- either prefixed by `_T`.
-	- 
+Tie will be prefixed by `T_`.
 
-`odd` number for A winning and `even` for B winning.
-for `tie` we will use alphabetic order.
+video path: gameType -> hostType -> non-dealing_serialNo. / winner_serialNo.
 
-Lucky7:
-- A is low
-- B is high

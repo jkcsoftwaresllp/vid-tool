@@ -343,7 +343,7 @@ fn handle_non_dealing_stream(
     game_streams: Arc<Mutex<HashMap<String, GameStream>>>,
     round_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let input_video = "assets/videos/re4.mp4".to_string();
+    let input_video = get_non_dealing_video(game_type, &"HostA".to_string())?;
     let mut processor = VideoProcessor::new(&input_video, "output_blab.mp4")?;
 
     {
@@ -610,7 +610,7 @@ fn get_dealing_video(
 
     match game_type {
         "ANDAR_BAHAR_TWO" | "TEEN_PATTI" | "LUCKY7A" | "LUCKY7B" | "ANDAR_BAHAR"
-        | "DRAGON_TIGER_LION" | "DRAGON_TIGER" => {
+        | "DRAGON_TIGER_LION" | "DRAGON_TIGER" | "DRAGON_TIGER_TWO" => {
             let vpath = format!(
                 "assets/videos/{}/{}/{}_{}.mp4",
                 game_type,
@@ -624,5 +624,39 @@ fn get_dealing_video(
             Ok(vpath)
         }
         _ => Err("Unsupported game type".into()),
+    }
+}
+
+#[allow(unused_imports)]
+fn get_non_dealing_video(
+    game_type: &str,
+    host: &String,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use rand::Rng;
+    // let random_num = rand::thread_rng().gen_range(1..=9);
+    let random_num = 1;
+
+    println!("GETTING NON-DEALING PATH");
+
+    match game_type {
+        "ANDAR_BAHAR_TWO" | "TEEN_PATTI" | "LUCKY7A" | "LUCKY7B" | "ANDAR_BAHAR"
+        | "DRAGON_TIGER_LION" | "DRAGON_TIGER" | "DRAGON_TIGER_TWO" => {
+            let vpath = format!(
+                "assets/videos/{}/{}/non_dealing_{}.mp4",
+                game_type, host, random_num
+            );
+
+            println!("PATHING: {}", vpath);
+
+            // Check if the file exists
+            if std::path::Path::new(&vpath).exists() {
+                println!("Using non-dealing video path: {}", vpath);
+                Ok(vpath)
+            } else {
+                println!("Non-dealing video not found, using fallback path");
+                Ok("assets/videos/re4.mp4".to_string())
+            }
+        }
+        _ => Ok("assets/videos/re4.mp4".to_string()), // Fallback for unsupported game types
     }
 }
