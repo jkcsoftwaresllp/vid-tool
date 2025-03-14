@@ -57,6 +57,8 @@ pub struct VideoProcessor {
     pub source: videoio::VideoCapture,
     card_assets: HashMap<String, Mat>,
     pub output: videoio::VideoWriter,
+    previous_frame: Option<Mat>,
+    //thread_pool: rayon::ThreadPool,
 }
 
 // Modify create_placements_from_stored to use placeholder_id for consistent ordering
@@ -121,6 +123,12 @@ impl VideoProcessor {
         // Set higher bitrate
         output.set(videoio::VIDEOWRITER_PROP_QUALITY, 320.0)?;
 
+        // Create a thread pool with number of cores available
+        // let thread_pool = rayon::ThreadPoolBuilder::new()
+        //     .num_threads(num_cpus::get())
+        //     .build()
+        //     .unwrap();
+
         // Initialize card assets HashMap
         let card_assets = HashMap::new();
 
@@ -128,6 +136,8 @@ impl VideoProcessor {
             source,
             card_assets,
             output,
+            previous_frame: None,
+            //thread_pool,
         })
     }
 
@@ -280,99 +290,304 @@ impl VideoProcessor {
         Ok(())
     }
 
+    // Improved process_frame method with differencing and parallel processing
     pub fn process_frame(
         &mut self,
         frame: &mut Mat,
         placements: &[CardPlacement],
     ) -> Result<(), Box<dyn Error>> {
-        for placement in placements {
-            let card_asset = self
-                .card_assets
-                .entry(placement.card_asset_path.clone())
-                .or_insert_with(|| {
-                    imgcodecs::imread(&placement.card_asset_path, imgcodecs::IMREAD_UNCHANGED)
-                        .expect("Failed to load card asset")
+        // If empty placements, nothing to do
+        if placements.is_empty() {
+            return Ok(());
+        }
+
+        // Check for significant changes in the regions of interest
+        let mut regions_to_process = Vec::new();
+
+        if let Some(prev_frame) = &self.previous_frame {
+            for (idx, placement) in placements.iter().enumerate() {
+                // Expand the rect slightly to ensure we capture all relevant changes
+                let expanded_rect = expand_rect(&placement.position, 10, frame.size()?);
+
+                // Extract ROI from current and previous frame
+                let roi_current = Mat::roi(frame, expanded_rect)?;
+                let roi_previous = Mat::roi(prev_frame, expanded_rect)?;
+
+                // Calculate difference for this region
+                let mut diff = Mat::default();
+                core::absdiff(&roi_current, &roi_previous, &mut diff)?;
+
+                // Calculate mean change in the region
+                let mean = core::mean(&diff, &Mat::default())?;
+
+                // If change is significant, add to regions to process
+                if mean[0] > 2.0 || mean[1] > 2.0 || mean[2] > 2.0 {
+                    regions_to_process.push(idx);
+                }
+            }
+        } else {
+            // For the first frame, process all placements
+            regions_to_process = (0..placements.len()).collect();
+        }
+
+        // If no regions need processing, return early
+        if regions_to_process.is_empty() {
+            return Ok(());
+        }
+
+        // Store frame for future differencing
+        let mut frame_copy = Mat::default();
+        frame.copy_to(&mut frame_copy)?;
+        self.previous_frame = Some(frame_copy);
+
+        // Use parallel processing only if we have multiple regions to process
+        if regions_to_process.len() > 1 {
+            // Instead of using thread_pool.install, we'll use rayon's par_iter directly
+            use rayon::prelude::*;
+
+            // Prepare shared data that needs to be accessed across threads
+            let frame_width = frame.cols();
+            let frame_height = frame.rows();
+            let frame_size = core::Size::new(frame_width, frame_height);
+
+            // Create a structure to hold results from parallel processing
+            struct RegionResult {
+                warped: Mat,
+                mask: Mat,
+            }
+
+            // Process in parallel, but handle errors within the parallel section
+            let mut region_results: Vec<Option<RegionResult>> = regions_to_process
+                .par_iter()
+                .map(|&idx| {
+                    let placement = &placements[idx];
+
+                    // Load card asset (this part can't be parallelized easily with shared access)
+                    // So we'll just reload the asset each time
+                    let card_asset_result =
+                        imgcodecs::imread(&placement.card_asset_path, imgcodecs::IMREAD_UNCHANGED);
+
+                    let card_asset = match card_asset_result {
+                        Ok(asset) => asset,
+                        Err(_) => return None, // Skip this region if asset loading fails
+                    };
+
+                    // Process the placement (similar to existing code)
+                    let rot_rect_result = imgproc::min_area_rect(&placement.contour);
+                    if rot_rect_result.is_err() {
+                        return None;
+                    }
+                    let rot_rect = rot_rect_result.unwrap();
+
+                    let mut vertices = [core::Point2f::default(); 4];
+                    if rot_rect.points(&mut vertices).is_err() {
+                        return None;
+                    }
+
+                    // Sort vertices (simplified error handling)
+                    let center = vertices.iter().fold(Point2f::new(0.0, 0.0), |acc, &p| {
+                        Point2f::new(acc.x + p.x / 4.0, acc.y + p.y / 4.0)
+                    });
+
+                    vertices.sort_by(|a, b| {
+                        let a_angle = (a.y - center.y).atan2(a.x - center.x);
+                        let b_angle = (b.y - center.y).atan2(b.x - center.x);
+                        b_angle
+                            .partial_cmp(&a_angle)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+
+                    // Calculate width and height
+                    let width = rot_rect.size.width as i32;
+                    let height = rot_rect.size.height as i32;
+
+                    // Create source points
+                    let source_points = [
+                        Point2f::new(0.0, 0.0),
+                        Point2f::new(width as f32, 0.0),
+                        Point2f::new(width as f32, height as f32),
+                        Point2f::new(0.0, height as f32),
+                    ];
+
+                    // Create transformation matrices
+                    let src_points_result = Mat::from_slice(&source_points);
+                    let dst_points_result = Mat::from_slice(&vertices);
+
+                    if src_points_result.is_err() || dst_points_result.is_err() {
+                        return None;
+                    }
+
+                    let src_points = src_points_result.unwrap();
+                    let dst_points = dst_points_result.unwrap();
+
+                    // Resize card asset
+                    let mut resized_asset = Mat::default();
+                    if imgproc::resize(
+                        &card_asset,
+                        &mut resized_asset,
+                        core::Size::new(width, height),
+                        0.0,
+                        0.0,
+                        imgproc::INTER_CUBIC,
+                    )
+                    .is_err()
+                    {
+                        return None;
+                    }
+
+                    // Get perspective transform and apply it
+                    let transform_matrix_result = imgproc::get_perspective_transform(
+                        &src_points,
+                        &dst_points,
+                        core::DECOMP_LU,
+                    );
+
+                    if transform_matrix_result.is_err() {
+                        return None;
+                    }
+
+                    let transform_matrix = transform_matrix_result.unwrap();
+                    let mut warped = Mat::default();
+
+                    if imgproc::warp_perspective(
+                        &resized_asset,
+                        &mut warped,
+                        &transform_matrix,
+                        frame_size,
+                        imgproc::INTER_CUBIC,
+                        core::BORDER_CONSTANT,
+                        core::Scalar::default(),
+                    )
+                    .is_err()
+                    {
+                        return None;
+                    }
+
+                    // Create mask from contour
+                    let mask_result = Mat::zeros(frame_height, frame_width, core::CV_8UC1);
+                    if mask_result.is_err() {
+                        return None;
+                    }
+
+                    let mut mask = mask_result.unwrap().to_mat().unwrap_or(Mat::default());
+                    let mut contours = Vector::<Vector<Point>>::new();
+                    contours.push(placement.contour.clone());
+
+                    if imgproc::draw_contours(
+                        &mut mask,
+                        &contours,
+                        0,
+                        core::Scalar::new(255.0, 0.0, 0.0, 0.0),
+                        -1,
+                        imgproc::LINE_8,
+                        &Mat::default(),
+                        0,
+                        Point::new(0, 0),
+                    )
+                    .is_err()
+                    {
+                        return None;
+                    }
+
+                    Some(RegionResult { warped, mask })
+                })
+                .collect();
+
+            // Apply all successful results to the frame
+            for result in region_results.iter_mut() {
+                if let Some(region) = result.take() {
+                    // If copy_to_masked fails, just continue with the next region
+                    let _ = region.warped.copy_to_masked(frame, &region.mask);
+                }
+            }
+        } else {
+            // For single region, process sequentially (existing code)
+            for &idx in &regions_to_process {
+                let placement = &placements[idx];
+
+                let card_asset = self
+                    .card_assets
+                    .entry(placement.card_asset_path.clone())
+                    .or_insert_with(|| {
+                        imgcodecs::imread(&placement.card_asset_path, imgcodecs::IMREAD_UNCHANGED)
+                            .expect("Failed to load card asset")
+                    });
+
+                // Existing processing code...
+                let rot_rect = imgproc::min_area_rect(&placement.contour)?;
+                let mut vertices = [core::Point2f::default(); 4];
+                rot_rect.points(&mut vertices)?;
+
+                // Sort vertices correctly (top-left, top-right, bottom-right, bottom-left)
+                let center = vertices.iter().fold(Point2f::new(0.0, 0.0), |acc, &p| {
+                    Point2f::new(acc.x + p.x / 4.0, acc.y + p.y / 4.0)
                 });
 
-            // Get rotated rectangle and vertices
-            let rot_rect = imgproc::min_area_rect(&placement.contour)?;
-            let mut vertices = [core::Point2f::default(); 4];
-            rot_rect.points(&mut vertices)?;
+                vertices.sort_by(|a, b| {
+                    let a_angle = (a.y - center.y).atan2(a.x - center.x);
+                    let b_angle = (b.y - center.y).atan2(b.x - center.x);
+                    b_angle.partial_cmp(&a_angle).unwrap()
+                });
 
-            // Sort vertices correctly (top-left, top-right, bottom-right, bottom-left)
-            let center = vertices.iter().fold(Point2f::new(0.0, 0.0), |acc, &p| {
-                Point2f::new(acc.x + p.x / 4.0, acc.y + p.y / 4.0)
-            });
+                // Calculate width and height from the rotated rectangle
+                let width = rot_rect.size.width as i32;
+                let height = rot_rect.size.height as i32;
 
-            vertices.sort_by(|a, b| {
-                let a_angle = (a.y - center.y).atan2(a.x - center.x);
-                let b_angle = (b.y - center.y).atan2(b.x - center.x);
-                b_angle.partial_cmp(&a_angle).unwrap()
-            });
+                // Process as in your existing code...
+                let source_points = [
+                    Point2f::new(0.0, 0.0),
+                    Point2f::new(width as f32, 0.0),
+                    Point2f::new(width as f32, height as f32),
+                    Point2f::new(0.0, height as f32),
+                ];
 
-            // Calculate width and height from the rotated rectangle
-            let width = rot_rect.size.width as i32;
-            let height = rot_rect.size.height as i32;
+                let src_points = Mat::from_slice(&source_points)?;
+                let dst_points = Mat::from_slice(&vertices)?;
 
-            // Create source points for a properly oriented rectangle
-            let source_points = [
-                Point2f::new(0.0, 0.0),
-                Point2f::new(width as f32, 0.0),
-                Point2f::new(width as f32, height as f32),
-                Point2f::new(0.0, height as f32),
-            ];
+                let mut resized_asset = Mat::default();
+                imgproc::resize(
+                    card_asset,
+                    &mut resized_asset,
+                    core::Size::new(width, height),
+                    0.0,
+                    0.0,
+                    imgproc::INTER_CUBIC,
+                )?;
 
-            // Create transformation matrices
-            let src_points = Mat::from_slice(&source_points)?;
-            let dst_points = Mat::from_slice(&vertices)?;
+                let transform_matrix =
+                    imgproc::get_perspective_transform(&src_points, &dst_points, core::DECOMP_LU)?;
+                let mut warped = Mat::default();
+                imgproc::warp_perspective(
+                    &resized_asset,
+                    &mut warped,
+                    &transform_matrix,
+                    frame.size()?,
+                    imgproc::INTER_CUBIC,
+                    core::BORDER_CONSTANT,
+                    core::Scalar::default(),
+                )?;
 
-            // Resize card asset
-            let mut resized_asset = Mat::default();
-            imgproc::resize(
-                card_asset,
-                &mut resized_asset,
-                core::Size::new(width, height),
-                0.0,
-                0.0,
-                imgproc::INTER_CUBIC,
-            )?;
+                let mut mask =
+                    Mat::zeros(frame.size()?.height, frame.size()?.width, core::CV_8UC1)?
+                        .to_mat()?;
+                let mut contours = Vector::<Vector<Point>>::new();
+                contours.push(placement.contour.clone());
+                imgproc::draw_contours(
+                    &mut mask,
+                    &contours,
+                    0,
+                    core::Scalar::new(255.0, 0.0, 0.0, 0.0),
+                    -1,
+                    imgproc::LINE_8,
+                    &Mat::default(),
+                    0,
+                    Point::new(0, 0),
+                )?;
 
-            // Get perspective transform and apply it
-            let transform_matrix =
-                imgproc::get_perspective_transform(&src_points, &dst_points, core::DECOMP_LU)?;
-            let mut warped = Mat::default();
-            imgproc::warp_perspective(
-                &resized_asset,
-                &mut warped,
-                &transform_matrix,
-                frame.size()?,
-                imgproc::INTER_CUBIC,
-                core::BORDER_CONSTANT,
-                core::Scalar::default(),
-            )?;
-
-            // Create mask from contour
-            let mut mask =
-                Mat::zeros(frame.size()?.height, frame.size()?.width, core::CV_8UC1)?.to_mat()?;
-            let mut contours = Vector::<Vector<Point>>::new();
-            contours.push(placement.contour.clone());
-            imgproc::draw_contours(
-                &mut mask,
-                &contours,
-                0,
-                core::Scalar::new(255.0, 0.0, 0.0, 0.0),
-                -1,
-                imgproc::LINE_8,
-                &Mat::default(),
-                0,
-                Point::new(0, 0),
-            )?;
-
-            // Blend the warped image with the frame using the mask
-            // let mut warped_bgr = Mat::default();
-            // core::convert_scale_abs(&warped, &mut warped_bgr, 1.0, 0.0)?;
-            warped.copy_to_masked(frame, &mask)?;
+                warped.copy_to_masked(frame, &mask)?;
+            }
         }
+
         Ok(())
     }
 
@@ -578,6 +793,16 @@ impl VideoProcessor {
         let total_frames = self.source.get(videoio::CAP_PROP_FRAME_COUNT)? as i32;
         Ok(total_frames)
     }
+}
+
+// Helper function to expand a rectangle while keeping it within image bounds
+fn expand_rect(rect: &core::Rect, padding: i32, image_size: core::Size) -> core::Rect {
+    let new_x = (rect.x - padding).max(0);
+    let new_y = (rect.y - padding).max(0);
+    let new_width = (rect.width + 2 * padding).min(image_size.width - new_x);
+    let new_height = (rect.height + 2 * padding).min(image_size.height - new_y);
+
+    core::Rect::new(new_x, new_y, new_width, new_height)
 }
 
 #[allow(dead_code)]
