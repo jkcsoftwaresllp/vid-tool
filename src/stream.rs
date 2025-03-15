@@ -396,7 +396,13 @@ fn handle_non_dealing_stream(
             return Ok(()); // Exit the function instead of resetting
         }
 
-        send_frame(&frame, &processor, &broadcaster, round_id, "non-dealing")?;
+        send_frame(
+            &frame,
+            &mut processor,
+            &broadcaster,
+            round_id,
+            "non-dealing",
+        )?;
         std::thread::sleep(Duration::from_millis(33));
     }
 }
@@ -518,7 +524,7 @@ fn handle_dealing_stage(
 
         send_frame(
             &frame,
-            &processor,
+            &mut processor,
             &broadcaster,
             &game_state.roundId,
             "dealing",
@@ -546,11 +552,24 @@ fn handle_dealing_stage(
 #[allow(unused_variables)]
 fn send_frame(
     frame: &Mat,
-    processor: &VideoProcessor,
+    processor: &mut VideoProcessor,
     broadcaster: &WebSocketBroadcaster,
     round_id: &str,
     stream_type: &str, // Add this parameter
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+
+    // Limit frame rate to 30 FPS (approximately one frame every 33ms)
+    let now = Instant::now();
+    let target_interval = Duration::from_millis(33);
+    if let Some(last) = processor.last_sent {
+        if now.duration_since(last) < target_interval {
+            // Too soon to send the next frame; simply skip this frame.
+            return Ok(());
+        }
+    }
+    processor.last_sent = Some(now);
+
     let mut buffer = Vector::new();
 
     // Compress as JPEG with reduced quality (75% is usually good balance)

@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 
 #[allow(dead_code)]
@@ -105,6 +107,7 @@ pub struct VideoProcessor {
     // Persistent overlays for each placement (keyed by an index corresponding to the
     // order in the placements array)
     persistent_overlays: HashMap<usize, RegionResult>,
+    pub last_sent: Option<Instant>,
 }
 
 impl VideoProcessor {
@@ -129,6 +132,7 @@ impl VideoProcessor {
             output,
             previous_frame: None,
             persistent_overlays: HashMap::new(),
+            last_sent: None,
         })
     }
 
