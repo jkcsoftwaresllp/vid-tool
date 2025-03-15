@@ -16,6 +16,18 @@ use tokio::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+const VALID_GAMES: &[&str] = &[
+    "LUCKY7B",
+    "DRAGON_TIGER",
+    "TEEN_PATTI",
+    // "ANDAR_BAHAR",
+    // "ANDAR_BAHAR_TWO",
+    // "DRAGON_TIGER_LION",
+    "DRAGON_TIGER",
+    "DRAGON_TIGER_TWO",
+    // "LUCKY7A",
+];
+
 // Import GameData from vid module
 use crate::vid::{create_placements_from_stored, GameData, VideoProcessor};
 
@@ -627,22 +639,19 @@ fn get_dealing_video(
     use rand::Rng;
     let _random_num = rand::thread_rng().gen_range(1..=9);
 
-    match game_type {
-        "ANDAR_BAHAR_TWO" | "TEEN_PATTI" | "LUCKY7A" | "LUCKY7B" | "ANDAR_BAHAR"
-        | "DRAGON_TIGER_LION" | "DRAGON_TIGER" | "DRAGON_TIGER_TWO" => {
-            let vpath = format!(
-                "assets/videos/{}/{}/{}_{}.mp4",
-                game_type,
-                host,
-                winner.unwrap_or("high"),
-                "1"
-            );
-
-            println!("Dealing video path: {}", vpath);
-
-            Ok(vpath)
-        }
-        _ => Err("Unsupported game type".into()),
+    if VALID_GAMES.contains(&game_type) {
+        // Format the path for dealing video; you can customize this format
+        let vpath = format!(
+            "assets/videos/{}/{}/{}_{}.mp4",
+            game_type,
+            host,
+            winner.unwrap_or("high"),
+            "1" // you might change "1" if needed for versioning or round
+        );
+        println!("Dealing video path: {}", vpath);
+        Ok(vpath)
+    } else {
+        Err("Unsupported game type for dealing".into())
     }
 }
 
@@ -657,25 +666,23 @@ fn get_non_dealing_video(
 
     println!("GETTING NON-DEALING PATH");
 
-    match game_type {
-        "ANDAR_BAHAR_TWO" | "TEEN_PATTI" | "LUCKY7A" | "LUCKY7B" | "ANDAR_BAHAR"
-        | "DRAGON_TIGER_LION" | "DRAGON_TIGER" | "DRAGON_TIGER_TWO" => {
-            let vpath = format!(
-                "assets/videos/{}/{}/non_dealing_{}.mp4",
-                game_type, host, random_num
-            );
-
-            println!("PATHING: {}", vpath);
-
-            // Check if the file exists
-            if std::path::Path::new(&vpath).exists() {
-                println!("Using non-dealing video path: {}", vpath);
-                Ok(vpath)
-            } else {
-                println!("Non-dealing video not found, using fallback path");
-                Ok("assets/videos/re4.mp4".to_string())
-            }
+    if VALID_GAMES.contains(&game_type) {
+        // Format the path for non-dealing video; adjust the format as needed
+        let vpath = format!(
+            "assets/videos/{}/{}/non_dealing_{}.mp4",
+            game_type,
+            host,
+            random_num // you can randomize or change this number as needed
+        );
+        println!("Non-dealing video path: {}", vpath);
+        // Check whether the file exists. If not, return a fallback
+        if std::path::Path::new(&vpath).exists() {
+            Ok(vpath)
+        } else {
+            println!("Non-dealing video not found, using fallback path");
+            Ok("assets/videos/re4.mp4".to_string())
         }
-        _ => Ok("assets/videos/re4.mp4".to_string()), // Fallback for unsupported game types
+    } else {
+        Err("Unsupported game type for non-dealing".into())
     }
 }
