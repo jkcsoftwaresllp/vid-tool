@@ -17,7 +17,7 @@ use tokio::time::Duration;
 use serde::{Deserialize, Serialize};
 
 const VALID_GAMES: &[&str] = &[
-    "LUCKY7B",
+    // "LUCKY7B",
     "DRAGON_TIGER",
     "TEEN_PATTI",
     // "ANDAR_BAHAR",
@@ -25,7 +25,7 @@ const VALID_GAMES: &[&str] = &[
     // "DRAGON_TIGER_LION",
     "DRAGON_TIGER",
     "DRAGON_TIGER_TWO",
-    // "LUCKY7A",
+    "LUCKY7A",
 ];
 
 // Import GameData from vid module
@@ -694,7 +694,7 @@ fn get_non_dealing_video(
     if VALID_GAMES.contains(&game_type) {
         // Format the path for non-dealing video; adjust the format as needed
         let vpath = format!(
-            "assets/videos/{}/{}/non_dealing_{}.mp4",
+            "assets/videos/{}/{}/nd-{}.mp4",
             game_type,
             host,
             random_num // you can randomize or change this number as needed

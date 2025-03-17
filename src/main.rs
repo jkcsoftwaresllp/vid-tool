@@ -55,21 +55,26 @@ fn preprocess_videos() -> Result<(), Box<dyn Error>> {
             // Process each video file
             for video_entry in std::fs::read_dir(&host_path)? {
                 let video_entry = video_entry?;
-                if !video_entry
-                    .path()
-                    .extension()
-                    .map_or(false, |ext| ext == "mp4")
-                {
+                let path = video_entry.path();
+
+                // Skip if not an mp4 file
+                if !path.extension().map_or(false, |ext| ext == "mp4") {
                     continue;
                 }
 
-                let video_path = video_entry.path();
-                let placeholder_path = video_path.with_extension("json");
+                // Skip files starting with "nd-"
+                if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
+                    if file_name.starts_with("nd-") {
+                        continue;
+                    }
+                }
 
-                println!("Processing {}", video_path.display());
+                let placeholder_path = path.with_extension("json");
+
+                println!("Processing {}", path.display());
 
                 let mut processor =
-                    VideoProcessor::new(video_path.to_str().unwrap(), "dummy_output.mp4")?;
+                    VideoProcessor::new(path.to_str().unwrap(), "dummy_output.mp4")?;
 
                 processor.scan_and_save_placeholders(placeholder_path.to_str().unwrap())?;
             }
