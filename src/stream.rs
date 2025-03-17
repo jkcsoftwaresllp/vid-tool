@@ -430,7 +430,26 @@ fn handle_dealing_stage(
     println!("Starting dealing stage for {}", game_type);
     println!("Full game state: {:?}", game_state);
 
-    let dealing_video = get_dealing_video(game_type, host, game_state.winner.as_deref())?;
+    let dealing_video = match get_dealing_video(game_type, host, game_state.winner.as_deref()) {
+        Ok(video) => video,
+        Err(err) => {
+            eprintln!("Error obtaining dealing video: {}", err);
+            // Broadcast an error message via WebSocket to the client.
+            broadcaster.broadcast(
+                &game_state.roundId,
+                &ProcessResponse::Error {
+                    message: "Dealing video not found".to_string(),
+                },
+            )?;
+            // (Optional) Also notify the server via the Unix connection.
+            let error_response = ProcessResponse::Error {
+                message: "Dealing video not found".to_string(),
+            };
+            let _ = send_response(stream, &error_response);
+            return Err(err);
+        }
+    };
+
     let mut processor = VideoProcessor::new(&dealing_video, "output_test_new.mp4")?;
 
     // Create separate vectors for each player's cards
@@ -541,6 +560,7 @@ fn handle_dealing_stage(
             &game_state.roundId,
             "dealing",
         )?;
+        std::thread::sleep(Duration::from_millis(5));
         frame_number += 1;
     }
 
@@ -648,8 +668,13 @@ fn get_dealing_video(
             winner.unwrap_or("high"),
             "1" // you might change "1" if needed for versioning or round
         );
-        println!("Dealing video path: {}", vpath);
-        Ok(vpath)
+        // Check whether the file exists. If not, return an error.
+        if std::path::Path::new(&vpath).exists() {
+            println!("Dealing video path: {}", vpath);
+            Ok(vpath)
+        } else {
+            Err(format!("Dealing video not found at path: {}", vpath).into())
+        }
     } else {
         Err("Unsupported game type for dealing".into())
     }
