@@ -605,7 +605,7 @@ fn send_frame(
     let mut buffer = Vector::new();
 
     // Compress as JPEG with reduced quality (75% is usually good balance)
-    let params = Vector::from_slice(&[imgcodecs::IMWRITE_JPEG_QUALITY, 75]);
+    let params = Vector::from_slice(&[imgcodecs::IMWRITE_JPEG_QUALITY, 60]);
     imgcodecs::imencode(".jpg", &frame, &mut buffer, &params)?;
 
     // Get frame metadata
